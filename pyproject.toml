@@ -1,0 +1,86 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantheon"
+version = "0.2.0"
+description = "Agentic derivatives pricing and hedging desk"
+license = "GPL-3.0-only"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.124.0",
+  "uvicorn>=0.38.0",
+  "sqlalchemy>=2.0.25",
+  "alembic>=1.17.0",
+  "pydantic>=2.12.0",
+  "pydantic-settings>=2.0.0",
+  "python-dotenv>=1.0.0",
+  "python-multipart>=0.0.9",
+  "python-docx>=1.1.2",
+  "pypdf>=5.1",
+  "pypdfium2>=4.30",
+  "pandas>=2.0.0",
+  "pyarrow>=18.0.0",
+  "openpyxl>=3.1.0",
+  "matplotlib>=3.9.0",
+  "plotly>=5.24.0",
+  "seaborn>=0.13.0",
+  "scipy>=1.14.0",
+  "pyyaml>=6.0",
+  "markdown>=3.5",
+  "ruamel.yaml>=0.18.0",
+  "langchain>=1.4.2",
+  "langchain-deepseek>=1.1.1",
+  "langchain-openai>=1.6.6",
+  "langgraph>=1.2.12",
+  "aiosqlite>=0.20.0",
+  "langsmith>=0.4.0",
+  "deepagents[quickjs]>=0.7.19",
+  "akshare>=1.16.0",
+  # EXACT pin, not a floor. QuantArk is the deterministic pricing engine the
+  # golden-workflow fixtures are harvested against, so its version is part of the
+  # benchmark's evidence — the same discipline CLAUDE.md already requires for the
+  # compaction A/B ("dependency drift invalidates the benchmark"). A `>=` floor let
+  # 0.4.0's `fix(autocallables): stabilize PDE and QUAD grids` land silently and move
+  # every SnowballQuadEngine number: high-board's governed valuation went
+  # 238.0478921928385 -> 237.72581292974365 and portfolio gamma_cash -6.64 -> -287.04,
+  # turning the drift guard red with no change in this repo. 0.3.0 reproduces the
+  # harvested truth EXACTLY (both values, to the last digit).
+  #
+  # Install from PyPI, never `pip install -e /path/to/quant-ark`: an editable install
+  # makes a live working tree the pricing engine, so an uncommitted edit next door
+  # silently changes benchmark numbers here. It also leaves stale dist metadata (this
+  # venv reported 0.1.2 while running 0.4.0 code), which defeats any version check.
+  #
+  # To move to a newer QuantArk: bump this pin, re-run
+  # `python -m app.golden_workflows.harvest_fixtures`, and update the graded constants
+  # in the affected manifests IN THE SAME COMMIT — never separately, or the fixtures
+  # and the engine disagree and every grounding check silently mis-scores.
+  "quantark==0.3.0",
+  "langgraph-checkpoint-sqlite>=3.1.1",
+  "langchain-sandbox>=0.0.3",
+  "typer>=0.12.0",
+  "lark-oapi>=1.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28.0",
+  "pytest>=9.0.0",
+  "pytest-asyncio>=0.23.0",
+]
+
+[project.scripts]
+open-otc = "app.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "backend"}
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["backend"]
+addopts = "-q"

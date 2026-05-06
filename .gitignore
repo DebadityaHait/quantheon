@@ -1,0 +1,75 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.playwright-mcp/
+.claude/
+.codegraph/
+.understand-anything/
+.venv/
+.frontend/fonts/
+frontend/public/fonts/
+venv/
+data/
+artifacts/
+outputs/
+build/
+agent_checkpoints.sqlite
+agent_checkpoints.sqlite.bak.*
+agent_checkpoints.sqlite-*
+*.egg-info/
+.antigravitycli/
+node_modules/
+dist/
+*.tsbuildinfo
+open-otc-*.png
+coverage/
+.env
+.env.*
+!.env.example
+config/agent_channels.yaml
+/marketing/
+
+# local Claude/zenmux tooling packages — not project source.
+# Whole directories, not just the former .agents/skills/* + .context/prompts/*
+# subpaths: those narrower rules were already in place, yet 11 files under them
+# stayed TRACKED (a .gitignore entry never untracks something already in the
+# index — the files were force-added or predate the rule). They were removed
+# from the index with `git rm -r --cached` when these lines landed; the working
+# copies are untouched on disk.
+.agents/
+.context/
+.superpowers/
+
+# stray root sqlite (real DB lives in data/, gitignored)
+open_otc.sqlite
+
+# generated rednote artifacts
+docs/rednotes/
+
+# Local scratch + the THIRD-PARTY ISDA reference template. The synthetic corpus
+# that used to live here is now TRACKED at backend/app/golden_workflows/documents/,
+# because it grades the confirmation-desk-day arena board and a benchmark cannot
+# rest on per-environment files (the trap CLAUDE.md records for
+# config/agent_channels.yaml). Anything left under docs/confirmations/ is a local
+# copy or third-party material — never the graded corpus.
+docs/confirmations/
+
+# zhihu article drafts (rewritten from docs/arena reports)
+docs/zhihu/
+
+# generated ability-card images (re-renderable from the board data)
+docs/arena/cards/
+
+# generated arena blog (rebuildable from posts.yaml + the report markdown)
+docs/arena/deploy/build/
+
+# arena readership snapshot (derived from server logs, recomputable)
+docs/arena/deploy/stats.json
+# NB boards.json is deliberately NOT ignored: the arena DB lives under the
+# gitignored data/, so a checkout without it could not rebuild the leaderboard.
+
+# arena run logs: raw stdout of scripts/launch_arena_run.py. Large, per-machine,
+# and every score they mention is already in the arena DB and the reports.
+logs/
