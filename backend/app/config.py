@@ -1,0 +1,596 @@
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_ENV_FILE = _REPO_ROOT / ".env"
+
+#: Env var that redirects — or disables — dotenv loading process-wide.
+#: Unset (the normal case) keeps the repo-root ``.env``; empty disables dotenv
+#: entirely. The test suite sets it empty so a developer's real ``.env`` cannot
+#: leak into assertions about defaults.
+ENV_FILE_OVERRIDE_VAR = "OPEN_OTC_ENV_FILE"
+
+
+def dotenv_path() -> Path | None:
+    """The dotenv file to read, or None when dotenv loading is disabled.
+
+    Every ``.env`` reader in the codebase must go through this, not through
+    ``_ENV_FILE`` directly — otherwise the suite is hermetic on one path and
+    leaky on the other. Currently two readers: ``_read_environment_settings``
+    here and ``channel_registry.load_from_path``'s ``load_dotenv``.
+    """
+    override = os.environ.get(ENV_FILE_OVERRIDE_VAR)
+    if override is None:
+        return _ENV_FILE
+    return Path(override) if override else None
+
+
+def _default_risk_parallel_workers() -> int:
+    return max(1, min(8, os.cpu_count() or 1))
+
+
+def _default_async_task_workers() -> int:
+    return 1
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    return bool(value)
+
+
+#: System One tool-guard modes (spec 2026-09-21 §0).
+TOOL_GUARD_MODES: tuple[str, ...] = ("off", "shadow", "enforce")
+
+
+def _normalize_tool_guard_mode(value: Any) -> str:
+    """`off` | `shadow` | `enforce`; anything else FAILS CLOSED to `shadow`.
+
+    Never to `off` — a typo must not silently stop measurement — and never to
+    `enforce` — a typo must not start blocking.
+    """
+    mode = str(value if value is not None else "").strip().lower()
+    if mode in TOOL_GUARD_MODES:
+        return mode
+    logger.warning(
+        "OPEN_OTC_TOOL_GUARD=%r is not one of %s; using 'shadow'",
+        value, "/".join(TOOL_GUARD_MODES),
+    )
+    return "shadow"
+
+
+class _EnvironmentSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file_encoding="utf-8",
+        env_prefix="",
+        extra="ignore",
+    )
+
+    app_name: str = "Quantheon"
+    database_url: str = Field(
+        "sqlite+pysqlite:///./data/open_otc.sqlite3",
+        validation_alias="OPEN_OTC_DATABASE_URL",
+    )
+    artifact_dir: Path = Field(
+        Path("./artifacts"),
+        validation_alias="OPEN_OTC_ARTIFACT_DIR",
+    )
+    agent_channels_file: Path = Field(
+        Path("./config/agent_channels.yaml"),
+        validation_alias="AGENT_CHANNELS_FILE",
+    )
+    agent_checkpoint_db_path: str = Field(
+        "./agent_checkpoints.sqlite",
+        validation_alias=AliasChoices(
+            "AGENT_CHECKPOINT_DB_PATH", "AGENT_CHECKPOINT_DB"
+        ),
+    )
+    risk_parallel_workers: int = Field(
+        default_factory=_default_risk_parallel_workers,
+        validation_alias=AliasChoices(
+            "OPEN_OTC_RISK_PARALLEL_WORKERS", "RISK_PARALLEL_WORKERS"
+        ),
+    )
+    quantark_execution_backend: str = Field(
+        "processes",
+        validation_alias="OPEN_OTC_QUANTARK_EXECUTION_BACKEND",
+    )
+    hedge_risk_max_age_seconds: int = Field(
+        900,
+        ge=1,
+        validation_alias="OPEN_OTC_HEDGE_RISK_MAX_AGE_SECONDS",
+    )
+    async_task_workers: int = Field(
+        default_factory=_default_async_task_workers,
+        validation_alias=AliasChoices(
+            "OPEN_OTC_ASYNC_TASK_WORKERS", "ASYNC_TASK_WORKERS"
+        ),
+    )
+    agent_recursion_limit: int = Field(
+        100,
+        validation_alias=AliasChoices(
+            "OPEN_OTC_AGENT_RECURSION_LIMIT", "LANGGRAPH_RECURSION_LIMIT"
+        ),
+    )
+    agent_max_output_tokens: int = Field(
+        32768,
+        validation_alias="OPEN_OTC_AGENT_MAX_OUTPUT_TOKENS",
+    )
+    agent_compaction_threshold_fraction: float = Field(
+        0.7, gt=0, lt=1, validation_alias="OPEN_OTC_COMPACTION_THRESHOLD_FRACTION",
+    )
+    agent_compaction_threshold_tokens: int = Field(
+        100_000, gt=0, validation_alias="OPEN_OTC_COMPACTION_THRESHOLD_TOKENS",
+    )
+    agent_compaction_keep_messages: int = Field(
+        6, ge=2, validation_alias="OPEN_OTC_COMPACTION_KEEP_MESSAGES",
+    )
+    agent_compaction_summary_input_tokens: int = Field(
+        16_000, ge=1024, validation_alias="OPEN_OTC_COMPACTION_SUMMARY_INPUT_TOKENS",
+    )
+    agent_compaction_summary_output_tokens: int = Field(
+        4096, ge=512, validation_alias="OPEN_OTC_COMPACTION_SUMMARY_OUTPUT_TOKENS",
+    )
+    agent_compaction_retained_tokens: int = Field(
+        4096, ge=512, validation_alias="OPEN_OTC_COMPACTION_RETAINED_TOKENS",
+    )
+    agent_compaction_reference_tokens: int = Field(
+        2048, ge=128, validation_alias="OPEN_OTC_COMPACTION_REFERENCE_TOKENS",
+    )
+    agent_compaction_summary_effort: str = Field(
+        "low", pattern=r"^(low|medium|high)$",
+        validation_alias="OPEN_OTC_COMPACTION_SUMMARY_EFFORT",
+    )
+    agent_openai_max_output_tokens: int | None = Field(
+        None,
+        validation_alias="OPEN_OTC_AGENT_OPENAI_MAX_OUTPUT_TOKENS",
+    )
+    agent_stream_version: str = Field(
+        "v3",
+        validation_alias="OPEN_OTC_AGENT_STREAM_VERSION",
+    )
+    agent_code_interpreter_enabled: bool = Field(
+        False,
+        validation_alias="OPEN_OTC_AGENT_CODE_INTERPRETER",
+    )
+    arena_jury_enabled: bool = Field(
+        False,
+        validation_alias="OPEN_OTC_ARENA_JURY",
+    )
+    feature_workflow_routing: bool = Field(
+        True,
+        validation_alias="OPEN_OTC_FEATURE_WORKFLOW_ROUTING",
+    )
+    feature_skills_write_api: bool = Field(
+        True,
+        validation_alias="OPEN_OTC_FEATURE_SKILLS_WRITE_API",
+    )
+    feature_model_write_api: bool = Field(
+        True,
+        validation_alias="OPEN_OTC_FEATURE_MODEL_WRITE_API",
+    )
+    tracing_mode: str = Field(
+        "local",
+        validation_alias="OPEN_OTC_TRACING",
+    )
+    trace_db_path: str = Field(
+        "./data/agent_traces.sqlite3",
+        validation_alias="OPEN_OTC_TRACE_DB_PATH",
+    )
+    gateway_default_desk_user: str = Field(
+        "desk_user",
+        validation_alias="GATEWAY_DEFAULT_DESK_USER",
+    )
+    gateway_linking_code_ttl_s: int = Field(
+        600,
+        validation_alias="GATEWAY_LINKING_CODE_TTL_S",
+    )
+    gateway_card_action_ttl_s: int = Field(
+        1800,
+        validation_alias="GATEWAY_CARD_ACTION_TTL_S",
+    )
+    gateway_max_inbound_chars: int = Field(
+        4000,
+        validation_alias="GATEWAY_MAX_INBOUND_CHARS",
+    )
+    gateway_max_queued_per_chat: int = Field(
+        8,
+        validation_alias="GATEWAY_MAX_QUEUED_PER_CHAT",
+    )
+    gateway_queue_max_age_s: int = Field(
+        120,
+        validation_alias="GATEWAY_QUEUE_MAX_AGE_S",
+    )
+    gateway_dedupe_ttl_s: int = Field(
+        86400,
+        validation_alias="GATEWAY_DEDUPE_TTL_S",
+    )
+    gateway_dedupe_lease_s: int = Field(
+        120,
+        validation_alias="GATEWAY_DEDUPE_LEASE_S",
+    )
+    gateway_lock_lease_s: int = Field(
+        30,
+        validation_alias="GATEWAY_LOCK_LEASE_S",
+    )
+    gateway_code_issue_per_min: int = Field(
+        10,
+        validation_alias="GATEWAY_CODE_ISSUE_PER_MIN",
+    )
+    gateway_flush_interval_ms: int = Field(
+        700,
+        validation_alias="GATEWAY_FLUSH_INTERVAL_MS",
+    )
+    gateway_flush_chars: int = Field(
+        280,
+        validation_alias="GATEWAY_FLUSH_CHARS",
+    )
+    gateway_web_base_url: str | None = Field(
+        None,
+        validation_alias="GATEWAY_WEB_BASE_URL",
+    )
+    gateway_enabled_connectors: str = Field(
+        "",
+        validation_alias="GATEWAY_ENABLED_CONNECTORS",
+    )
+    feishu_app_id: str | None = Field(
+        None,
+        validation_alias="FEISHU_APP_ID",
+    )
+    feishu_app_secret: str | None = Field(
+        None,
+        validation_alias="FEISHU_APP_SECRET",
+    )
+    feishu_verification_token: str | None = Field(
+        None,
+        validation_alias="FEISHU_VERIFICATION_TOKEN",
+    )
+    feishu_encrypt_key: str | None = Field(
+        None,
+        validation_alias="FEISHU_ENCRYPT_KEY",
+    )
+    gateway_agent_model: str | None = Field(
+        None,
+        validation_alias="GATEWAY_AGENT_MODEL",
+    )
+    desk_region: str | None = Field(
+        None,
+        validation_alias="OPEN_OTC_DESK_REGION",
+    )
+    # System One (TypeSafe Jev), spec 2026-09-21. The master switch is the
+    # data-policy opt-in (D15): while it is false no request is ever made.
+    system_one_enabled: bool = Field(False, validation_alias="OPEN_OTC_SYSTEM_ONE")
+    system_one_model: str = Field(
+        "typesafe/jev-1.13", validation_alias="OPEN_OTC_SYSTEM_ONE_MODEL"
+    )
+    system_one_base_url: str = Field(
+        "https://zenmux.ai/api/v1", validation_alias="OPEN_OTC_SYSTEM_ONE_BASE_URL"
+    )
+    system_one_timeout_seconds: float = Field(
+        5.0, validation_alias="OPEN_OTC_SYSTEM_ONE_TIMEOUT_S"
+    )
+    system_one_max_state_chars: int = Field(
+        60000, validation_alias="OPEN_OTC_SYSTEM_ONE_MAX_STATE_CHARS"
+    )
+    # A plain str, normalised in Settings.__post_init__, so an unknown value
+    # degrades to "shadow" with a warning instead of failing app start-up.
+    tool_guard_mode: str = Field("shadow", validation_alias="OPEN_OTC_TOOL_GUARD")
+    confirmation_family_check_enabled: bool = Field(
+        True, validation_alias="OPEN_OTC_CONFIRMATION_FAMILY_CHECK"
+    )
+    # Limit incident text review (spec 2026-09-21-limit-incident-review D15):
+    # display-only Jev reads of waiver rationales and comment threads.
+    limit_review_enabled: bool = Field(
+        True, validation_alias="OPEN_OTC_LIMIT_REVIEW"
+    )
+    # Retrospective guard sweep (spec 2026-09-22-guard-sweep D11): the hourly
+    # desk daemon, an opt-out under the master switch. The CLI has no switch.
+    guard_sweep_enabled: bool = Field(
+        True, validation_alias="OPEN_OTC_GUARD_SWEEP"
+    )
+
+
+def _read_environment_settings() -> _EnvironmentSettings:
+    return _EnvironmentSettings(_env_file=dotenv_path())
+
+
+def _env_value(name: str) -> Any:
+    return getattr(_read_environment_settings(), name)
+
+
+@dataclass(frozen=True)
+class Settings:
+    app_name: str = "Quantheon"
+    database_url: str = field(default_factory=lambda: _env_value("database_url"))
+    artifact_dir: Path = field(default_factory=lambda: _env_value("artifact_dir"))
+    scenario_sets_dir: str = "data/scenario_sets"
+    scenario_test_output_dir: str = "outputs/scenario_test"
+    backtest_output_dir: str = "outputs/backtest"
+    scenario_grid_max_cells: int = 200
+    # Arena judge jury (spec 2026-07-05-arena-judge-fairness): a contestant-
+    # excluded panel of diverse models. deepseek-v4-pro is the DIRECT (non-ZenMux)
+    # resilience judge; the other two route via ZenMux. Substitutes replace any
+    # panel member that is itself the contestant being judged, in order.
+    arena_judge_models: list[str] = field(
+        default_factory=lambda: [
+            "deepseek-v4-pro", "anthropic/claude-opus-4.8", "qwen/qwen3.7-max"])
+    arena_judge_substitutes: list[str] = field(
+        default_factory=lambda: [
+            "gemini-3.1-pro-preview", "glm-5.2", "kimi-k2.7-code"])
+    arena_min_judges: int = 2
+    arena_self_consistency_k: int = 3
+    agent_channels_file: Path = field(
+        default_factory=lambda: _env_value("agent_channels_file")
+    )
+    agent_checkpoint_db_path: str = field(
+        default_factory=lambda: _env_value("agent_checkpoint_db_path")
+    )
+    risk_parallel_workers: int = field(
+        default_factory=lambda: _env_value("risk_parallel_workers")
+    )
+    quantark_execution_backend: str = field(
+        default_factory=lambda: _env_value("quantark_execution_backend")
+    )
+    hedge_risk_max_age_seconds: int = field(
+        default_factory=lambda: _env_value("hedge_risk_max_age_seconds")
+    )
+    async_task_workers: int = field(
+        default_factory=lambda: _env_value("async_task_workers")
+    )
+    agent_recursion_limit: int = field(
+        default_factory=lambda: _env_value("agent_recursion_limit")
+    )
+    agent_max_output_tokens: int = field(
+        default_factory=lambda: _env_value("agent_max_output_tokens")
+    )
+    agent_compaction_threshold_fraction: float = field(
+        default_factory=lambda: _env_value("agent_compaction_threshold_fraction")
+    )
+    agent_compaction_threshold_tokens: int = field(
+        default_factory=lambda: _env_value("agent_compaction_threshold_tokens")
+    )
+    agent_compaction_keep_messages: int = field(
+        default_factory=lambda: _env_value("agent_compaction_keep_messages")
+    )
+    agent_compaction_summary_input_tokens: int = field(
+        default_factory=lambda: _env_value("agent_compaction_summary_input_tokens")
+    )
+    agent_compaction_summary_output_tokens: int = field(
+        default_factory=lambda: _env_value("agent_compaction_summary_output_tokens")
+    )
+    agent_compaction_retained_tokens: int = field(
+        default_factory=lambda: _env_value("agent_compaction_retained_tokens")
+    )
+    agent_compaction_reference_tokens: int = field(
+        default_factory=lambda: _env_value("agent_compaction_reference_tokens")
+    )
+    agent_compaction_summary_effort: str = field(
+        default_factory=lambda: _env_value("agent_compaction_summary_effort")
+    )
+    agent_openai_max_output_tokens: int | None = field(
+        default_factory=lambda: _env_value("agent_openai_max_output_tokens")
+    )
+    agent_stream_version: str = field(
+        default_factory=lambda: _env_value("agent_stream_version")
+    )
+    agent_code_interpreter_enabled: bool = field(
+        default_factory=lambda: _env_value("agent_code_interpreter_enabled")
+    )
+    arena_jury_enabled: bool = field(
+        default_factory=lambda: _env_value("arena_jury_enabled")
+    )
+    feature_workflow_routing: bool = field(
+        default_factory=lambda: _env_value("feature_workflow_routing")
+    )
+    feature_skills_write_api: bool = field(
+        default_factory=lambda: _env_value("feature_skills_write_api")
+    )
+    feature_model_write_api: bool = field(
+        default_factory=lambda: _env_value("feature_model_write_api")
+    )
+    tracing_mode: str = field(default_factory=lambda: _env_value("tracing_mode"))
+    trace_db_path: str = field(default_factory=lambda: _env_value("trace_db_path"))
+    gateway_default_desk_user: str = field(
+        default_factory=lambda: _env_value("gateway_default_desk_user")
+    )
+    gateway_linking_code_ttl_s: int = field(
+        default_factory=lambda: _env_value("gateway_linking_code_ttl_s")
+    )
+    gateway_card_action_ttl_s: int = field(
+        default_factory=lambda: _env_value("gateway_card_action_ttl_s")
+    )
+    gateway_max_inbound_chars: int = field(
+        default_factory=lambda: _env_value("gateway_max_inbound_chars")
+    )
+    gateway_max_queued_per_chat: int = field(
+        default_factory=lambda: _env_value("gateway_max_queued_per_chat")
+    )
+    gateway_queue_max_age_s: int = field(
+        default_factory=lambda: _env_value("gateway_queue_max_age_s")
+    )
+    gateway_dedupe_ttl_s: int = field(
+        default_factory=lambda: _env_value("gateway_dedupe_ttl_s")
+    )
+    gateway_dedupe_lease_s: int = field(
+        default_factory=lambda: _env_value("gateway_dedupe_lease_s")
+    )
+    gateway_lock_lease_s: int = field(
+        default_factory=lambda: _env_value("gateway_lock_lease_s")
+    )
+    gateway_code_issue_per_min: int = field(
+        default_factory=lambda: _env_value("gateway_code_issue_per_min")
+    )
+    gateway_flush_interval_ms: int = field(
+        default_factory=lambda: _env_value("gateway_flush_interval_ms")
+    )
+    gateway_flush_chars: int = field(
+        default_factory=lambda: _env_value("gateway_flush_chars")
+    )
+    gateway_web_base_url: str | None = field(
+        default_factory=lambda: _env_value("gateway_web_base_url")
+    )
+    gateway_enabled_connectors: str = field(
+        default_factory=lambda: _env_value("gateway_enabled_connectors")
+    )
+    feishu_app_id: str | None = field(
+        default_factory=lambda: _env_value("feishu_app_id")
+    )
+    feishu_app_secret: str | None = field(
+        default_factory=lambda: _env_value("feishu_app_secret")
+    )
+    feishu_verification_token: str | None = field(
+        default_factory=lambda: _env_value("feishu_verification_token")
+    )
+    feishu_encrypt_key: str | None = field(
+        default_factory=lambda: _env_value("feishu_encrypt_key")
+    )
+    gateway_agent_model: str | None = field(
+        default_factory=lambda: _env_value("gateway_agent_model")
+    )
+    desk_region: str | None = field(
+        default_factory=lambda: _env_value("desk_region")
+    )
+    system_one_enabled: bool = field(
+        default_factory=lambda: _env_value("system_one_enabled")
+    )
+    system_one_model: str = field(
+        default_factory=lambda: _env_value("system_one_model")
+    )
+    system_one_base_url: str = field(
+        default_factory=lambda: _env_value("system_one_base_url")
+    )
+    system_one_timeout_seconds: float = field(
+        default_factory=lambda: _env_value("system_one_timeout_seconds")
+    )
+    system_one_max_state_chars: int = field(
+        default_factory=lambda: _env_value("system_one_max_state_chars")
+    )
+    tool_guard_mode: str = field(default_factory=lambda: _env_value("tool_guard_mode"))
+    confirmation_family_check_enabled: bool = field(
+        default_factory=lambda: _env_value("confirmation_family_check_enabled")
+    )
+    limit_review_enabled: bool = field(
+        default_factory=lambda: _env_value("limit_review_enabled")
+    )
+    guard_sweep_enabled: bool = field(
+        default_factory=lambda: _env_value("guard_sweep_enabled")
+    )
+
+    def __post_init__(self) -> None:
+        fraction = float(self.agent_compaction_threshold_fraction)
+        if not 0 < fraction < 1:
+            raise ValueError("agent_compaction_threshold_fraction must be between zero and one")
+        object.__setattr__(self, "agent_compaction_threshold_fraction", fraction)
+        for name, minimum in (
+            ("agent_compaction_threshold_tokens", 1), ("agent_compaction_keep_messages", 2),
+            ("agent_compaction_summary_input_tokens", 1024), ("agent_compaction_summary_output_tokens", 512),
+            ("agent_compaction_retained_tokens", 512), ("agent_compaction_reference_tokens", 128),
+        ):
+            value = int(getattr(self, name))
+            if value < minimum:
+                raise ValueError(f"{name} must be at least {minimum}")
+            object.__setattr__(self, name, value)
+        if self.agent_compaction_reference_tokens >= self.agent_compaction_retained_tokens:
+            raise ValueError("Reference budget must leave room for narrative and current work")
+        if self.agent_compaction_summary_effort not in {"low", "medium", "high"}:
+            raise ValueError("Unsupported compaction summary effort")
+        object.__setattr__(self, "artifact_dir", Path(self.artifact_dir))
+        object.__setattr__(self, "agent_channels_file", Path(self.agent_channels_file))
+        object.__setattr__(
+            self, "risk_parallel_workers", max(1, int(self.risk_parallel_workers))
+        )
+        hedge_risk_max_age_seconds = int(self.hedge_risk_max_age_seconds)
+        if hedge_risk_max_age_seconds < 1:
+            raise ValueError("hedge_risk_max_age_seconds must be positive")
+        object.__setattr__(
+            self, "hedge_risk_max_age_seconds", hedge_risk_max_age_seconds
+        )
+        object.__setattr__(
+            self, "async_task_workers", max(1, int(self.async_task_workers))
+        )
+        object.__setattr__(
+            self, "agent_recursion_limit", max(1, int(self.agent_recursion_limit))
+        )
+        stream_version = str(self.agent_stream_version).strip().lower()
+        if stream_version not in {"v2", "v3"}:
+            raise ValueError("agent_stream_version must be 'v2' or 'v3'")
+        object.__setattr__(self, "agent_stream_version", stream_version)
+        object.__setattr__(
+            self,
+            "agent_code_interpreter_enabled",
+            _coerce_bool(self.agent_code_interpreter_enabled),
+        )
+        object.__setattr__(
+            self,
+            "arena_jury_enabled",
+            _coerce_bool(self.arena_jury_enabled),
+        )
+        object.__setattr__(
+            self,
+            "feature_workflow_routing",
+            _coerce_bool(self.feature_workflow_routing),
+        )
+        object.__setattr__(
+            self,
+            "feature_skills_write_api",
+            _coerce_bool(self.feature_skills_write_api),
+        )
+        object.__setattr__(
+            self,
+            "feature_model_write_api",
+            _coerce_bool(self.feature_model_write_api),
+        )
+        object.__setattr__(
+            self, "system_one_enabled", _coerce_bool(self.system_one_enabled)
+        )
+        object.__setattr__(
+            self,
+            "confirmation_family_check_enabled",
+            _coerce_bool(self.confirmation_family_check_enabled),
+        )
+        object.__setattr__(
+            self, "limit_review_enabled", _coerce_bool(self.limit_review_enabled)
+        )
+        object.__setattr__(
+            self, "guard_sweep_enabled", _coerce_bool(self.guard_sweep_enabled)
+        )
+        timeout = float(self.system_one_timeout_seconds)
+        if timeout <= 0:
+            raise ValueError("system_one_timeout_seconds must be positive")
+        object.__setattr__(self, "system_one_timeout_seconds", timeout)
+        object.__setattr__(
+            self, "system_one_max_state_chars", max(1, int(self.system_one_max_state_chars))
+        )
+        object.__setattr__(
+            self, "tool_guard_mode", _normalize_tool_guard_mode(self.tool_guard_mode)
+        )
+
+
+_SETTINGS_OVERRIDE: Settings | None = None
+
+
+def configure_settings(new_settings: Settings | None) -> None:
+    global _SETTINGS_OVERRIDE
+    _SETTINGS_OVERRIDE = new_settings
+
+
+def get_settings() -> Settings:
+    if _SETTINGS_OVERRIDE is not None:
+        return _SETTINGS_OVERRIDE
+    return Settings()
