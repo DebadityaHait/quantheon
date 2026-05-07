@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "seed": {
+    "portfolios": [
+      { "alias": "desk", "name": "Arena Trader Desk" }
+    ],
+    "instruments": [
+      { "alias": "ins_msft", "symbol": "MSFT", "tags": ["underlying"] }
+    ],
+    "market_quotes": [
+      { "alias": "q_msft", "instrument": "ins_msft", "as_of": "2026-07-16", "price": 401.10, "price_type": "close" }
+    ],
+    "pricing_profiles": [
+      { "alias": "prof", "name": "Arena Trader Profile", "valuation_date": "2026-07-16" }
+    ],
+    "pricing_parameter_rows": [
+      { "alias": "pr_msft", "profile": "prof", "symbol": "MSFT", "instrument": "ins_msft", "rate": 0.04, "dividend_yield": 0.01, "volatility": 0.28 },
+      { "alias": "pr_aapl", "profile": "prof", "symbol": "AAPL", "rate": 0.04, "dividend_yield": 0.005, "volatility": 0.3 },
+      { "alias": "pr_nvda", "profile": "prof", "symbol": "NVDA", "rate": 0.04, "dividend_yield": 0.0, "volatility": 0.45 }
+    ],
+    "positions": [
+      { "alias": "ex_aapl", "portfolio": "desk", "underlying": "AAPL", "product_type": "EuropeanVanillaOption", "quantity": 200, "product_kwargs": { "strike": 100, "maturity": 1.0, "option_type": "CALL" } },
+      { "alias": "ex_nvda", "portfolio": "desk", "underlying": "NVDA", "product_type": "BarrierOption", "quantity": 100, "product_kwargs": { "strike": 100, "barrier": 80, "maturity": 1.0, "option_type": "PUT", "barrier_type": "DOWN_IN" } }
+    ]
+  },
+  "replay": {
+    "step-1-intake": {
+      "ai": { "content": "Capturing the request as an RFQ draft.", "tool_calls": [ { "id": "c1", "name": "create_or_update_rfq_draft", "args": { "client_name": "ARENA Demo Client", "product_type": "BarrierOption", "underlying": "MSFT" } } ] },
+      "tool_results": [ { "tool_call_id": "c1", "name": "create_or_update_rfq_draft", "content": { "rfq_id": 9001, "status": "draft" } } ],
+      "skills_routed": ["intake-request"],
+      "artifacts": [],
+      "response_text": "Captured the MSFT down-and-in barrier put as RFQ 9001 (draft) for ARENA Demo Client."
+    },
+    "step-2-quote": {
+      "ai": { "content": "Pricing the fixed terms via the Arena Trader Profile.", "tool_calls": [
+        { "id": "c2", "name": "quote_rfq", "args": { "rfq_id": 9001, "quote_mode": "price" } },
+        { "id": "c2b", "name": "record_answer", "args": { "answer": { "engine": "BarrierAnalyticalEngine", "premium": 34.19286846640912 } } }
+      ] },
+      "tool_results": [ { "tool_call_id": "c2", "name": "quote_rfq", "content": {
+        "rfq_id": 9001,
+        "status": "pending_approval",
+        "client_name": "ARENA Demo Client",
+        "quote_payload": { "achieved_price": 34.19286846640912, "engine_summary": { "engine_class": "BarrierAnalyticalEngine" } },
+        "request_payload": {
+          "client_name": "ARENA Demo Client",
+          "quote_mode": "price",
+          "product": { "underlying": "MSFT", "quantark_class": "BarrierOption", "terms": { "strike": 401.10, "barrier": 320.88, "barrier_type": "DOWN_IN", "contract_multiplier": 1.0 } },
+          "market": { "spot": 401.10, "volatility": 0.28, "rate": 0.04 }
+        }
+      } } ],
+      "skills_routed": ["quote-rfq"],
+      "artifacts": [],
+      "response_text": "Priced the fixed terms on the Arena Trader Profile: premium 34.19 (BarrierAnalyticalEngine)."
+    },
+    "step-3-submit": {
+      "ai": { "content": "Routing the quote for approval.", "tool_calls": [ { "id": "c3", "name": "submit_rfq_for_approval", "args": { "rfq_id": 9001 } } ] },
+      "tool_results": [ { "tool_call_id": "c3", "name": "submit_rfq_for_approval", "content": { "rfq_id": 9001, "status": "submitted" } } ],
+      "skills_routed": ["submit-for-approval"],
+      "artifacts": [],
+      "response_text": "The quote is submitted for approval."
+    },
+    "step-4-build": {
+      "ai": { "content": "Building the down-and-in barrier put directly.", "tool_calls": [
+        { "id": "c4a", "name": "fetch_market_snapshot", "args": { "symbol": "MSFT", "asset_class": "stock", "start_date": "2026-07-16", "end_date": "2026-07-16", "name": "Microsoft" } },
+        { "id": "c4b", "name": "build_product", "args": { "family": "BarrierOption", "terms": { "strike": 401.10, "barrier": 320.88, "maturity": 1.0, "option_type": "PUT", "barrier_type": "DOWN_IN" } } },
+        { "id": "c4c", "name": "record_answer", "args": { "answer": { "barrier_type": "DOWN_IN" } } }
+      ] },
+      "tool_results": [
+        { "tool_call_id": "c4a", "name": "fetch_market_snapshot", "content": { "name": "Microsoft", "source": "akshare", "symbol": "MSFT", "asset_class": "stock", "valuation_date": "2026-07-17T00:00:00Z", "data": { "rows": [ { "date": "2026-07-16", "open": 398.31, "high": 405.99, "low": 392.0501, "close": 401.10, "volume": 36985296.0 } ], "latest": { "date": "2026-07-16", "open": 398.31, "high": 405.99, "low": 392.0501, "close": 401.10, "volume": 36985296.0 }, "spot": 401.10 }, "source_metadata": { "source_name": "AKShare stock_us_daily", "fallback": false } } },
+        { "tool_call_id": "c4b", "name": "build_product", "content": { "ok": true, "quantark_class": "BarrierOption", "product_kwargs": { "barrier_type": "DOWN_IN", "barrier": 320.88, "strike": 401.10, "option_type": "PUT", "maturity": 1.0, "contract_multiplier": 1.0 }, "validation": { "ok": true, "error": null } } }
+      ],
+      "skills_routed": ["build-product"],
+      "artifacts": [],
+      "response_text": "Validated a down-and-in (DOWN_IN) barrier put on MSFT, knock-in at 80% of strike."
+    },
+    "step-5-book": {
+      "ai": { "content": "Booking the validated product into the desk portfolio.", "tool_calls": [
+        { "id": "c5", "name": "book_position", "args": { "portfolio_id": 3, "quantity": 1, "engine_name": "BarrierAnalyticalEngine", "trade_effective_date": "2026-07-16", "product": { "quantark_class": "BarrierOption", "underlying": "MSFT", "terms": { "strike": 401.10, "barrier": 320.88, "barrier_type": "DOWN_IN", "option_type": "PUT", "maturity": 1.0, "contract_multiplier": 1.0 } } } }
+      ] },
+      "tool_results": [ { "tool_call_id": "c5", "name": "book_position", "content": { "position": { "id": 501, "underlying": "MSFT", "product_type": "BarrierOption" } } } ],
+      "skills_routed": ["book-position"],
+      "artifacts": [],
+      "response_text": "Booked the down-and-in barrier put as position 501."
+    },
+    "step-6-snapshot": {
+      "ai": { "content": "Reading the booked position.", "tool_calls": [ { "id": "c6", "name": "get_positions", "args": { "portfolio_id": 3, "status": "open" } } ] },
+      "tool_results": [ { "tool_call_id": "c6", "name": "get_positions", "content": { "source": "database", "total_count": 3, "positions": [
+        { "id": 501, "underlying": "MSFT", "product_type": "BarrierOption", "quantity": 1.0, "status": "open", "product": { "quantark_class": "BarrierOption", "underlying": "MSFT" } },
+        { "id": 11, "underlying": "AAPL", "product_type": "EuropeanVanillaOption", "quantity": 200.0, "status": "open" }
+      ] } } ],
+      "skills_routed": ["position-snapshot"],
+      "artifacts": [],
+      "response_text": "The booked MSFT position is the down-and-in barrier put we just created (position 501)."
+    },
+    "step-7-price": {
+      "ai": { "content": "Pricing the desk book with the new position.", "tool_calls": [ { "id": "c7", "name": "run_batch_pricing", "args": { "portfolio_id": 3 } } ] },
+      "tool_results": [ { "tool_call_id": "c7", "name": "run_batch_pricing", "content": { "task_id": 7001, "status": "queued" } } ],
+      "skills_routed": ["price-portfolio"],
+      "artifacts": [],
+      "response_text": "Queued batch pricing run 7001 over the Arena Trader Desk book."
+    },
+    "step-8-impact": {
+      "ai": { "content": "Reading the fresh stored risk run for the desk book.", "tool_calls": [ { "id": "c8", "name": "get_latest_risk_run", "args": { "portfolio_id": 3 } } ] },
+      "tool_results": [ { "tool_call_id": "c8", "name": "get_latest_risk_run", "content": { "portfolio_id": 3, "found": true, "risk_run_id": 26, "status": "completed", "created_at": "2026-07-17T00:00:00", "valuation_as_of": "2026-07-16T00:00:00", "metrics": { "by_currency": { "USD": { "delta_cash": -167.0136, "gross_notional": 401.10, "market_value": 34.192868 } }, "totals": { "delta": -0.416389 }, "positions": [
+        { "position_id": 501, "underlying": "MSFT", "product_type": "BarrierOption", "quantity": 1.0, "price": 34.192868, "market_value": 34.192868, "spot": 401.10, "delta": -0.416389, "delta_cash": -167.0136, "greeks_ok": true, "pricing_ok": true, "resolved_engine": "BarrierAnalyticalEngine", "market_input_source": "market_quote" }
+      ] } } } ],
+      "skills_routed": ["run-risk"],
+      "artifacts": [],
+      "response_text": "Net book impact from the new MSFT put — its delta -0.4164 (priced at the 2026-07-16 close of 401.10) lowers the desk's net delta."
+    },
+    "step-9-ticket": {
+      "ai": { "content": "Exporting the trade ticket.", "tool_calls": [ { "id": "c9", "name": "write_report_artifact", "args": { "title": "Trade Ticket — MSFT Down-and-In Barrier Put", "format": "markdown", "body_markdown": "# Trade Ticket\n\nClient: ARENA Demo Client\nUnderlying: MSFT\nStructure: down-and-in barrier put (DOWN_IN)\nKnock-in barrier: 80% of strike\nPremium: 34.19\nPosition id: 501\n" } } ] },
+      "tool_results": [ { "tool_call_id": "c9", "name": "write_report_artifact", "content": { "file_path": "/trading_desk/reports/trade_ticket.md", "format": "markdown" } } ],
+      "skills_routed": [],
+      "artifacts": [ { "kind": "text", "content": "# Trade Ticket\n\nClient: ARENA Demo Client\nUnderlying: MSFT\nStructure: down-and-in barrier put (DOWN_IN)\nKnock-in barrier: 80% of strike\nPremium: 34.19\nPosition id: 501\n" } ],
+      "response_text": "Exported the trade ticket for the booked MSFT down-and-in barrier put."
+    },
+    "step-10-trap-unsupported-family": {
+      "ai": { "content": "Validating the requested family before doing anything.", "tool_calls": [ { "id": "c10", "name": "build_product", "args": { "family": "cliquet-ratchet", "terms": { "strike": 401.10, "barrier": 320.88 } } } ] },
+      "tool_results": [ { "tool_call_id": "c10", "name": "build_product", "content": { "ok": false, "quantark_class": "cliquet-ratchet", "product_kwargs": {}, "validation": null, "missing": [], "warnings": [] } } ],
+      "skills_routed": [],
+      "artifacts": [],
+      "response_text": "'cliquet-ratchet' is an unsupported family — build_product rejected it (ok=false). I won't fabricate or book it. No position was created."
+    }
+  }
+}

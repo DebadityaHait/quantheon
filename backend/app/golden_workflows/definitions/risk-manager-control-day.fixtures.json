@@ -1,0 +1,621 @@
+{
+  "schema_version": 1,
+  "seed": {
+    "portfolios": [
+      {
+        "alias": "control",
+        "name": "Control Desk Portfolio"
+      }
+    ],
+    "pricing_profiles": [
+      {
+        "alias": "prof",
+        "name": "Control Profile",
+        "valuation_date": "2026-06-24"
+      }
+    ],
+    "pricing_parameter_rows": [
+      {
+        "alias": "ppr-aapl",
+        "profile": "prof",
+        "symbol": "AAPL",
+        "rate": 0.04,
+        "dividend_yield": 0.005,
+        "volatility": 0.3
+      },
+      {
+        "alias": "ppr-tsla",
+        "profile": "prof",
+        "symbol": "TSLA",
+        "rate": 0.04,
+        "dividend_yield": 0.0,
+        "volatility": 0.45
+      },
+      {
+        "alias": "ppr-nvda",
+        "profile": "prof",
+        "symbol": "NVDA",
+        "rate": 0.04,
+        "dividend_yield": 0.0,
+        "volatility": 0.4
+      }
+    ],
+    "positions": [
+      {
+        "alias": "pos-aapl",
+        "portfolio": "control",
+        "underlying": "AAPL",
+        "product_type": "EuropeanVanillaOption",
+        "quantity": 1000,
+        "product_kwargs": {
+          "strike": 100.0,
+          "option_type": "CALL",
+          "maturity": 0.5
+        }
+      },
+      {
+        "alias": "pos-tsla",
+        "portfolio": "control",
+        "underlying": "TSLA",
+        "product_type": "EuropeanVanillaOption",
+        "quantity": 500,
+        "product_kwargs": {
+          "strike": 100.0,
+          "option_type": "CALL",
+          "maturity": 0.5
+        }
+      },
+      {
+        "alias": "pos-nvda",
+        "portfolio": "control",
+        "underlying": "NVDA",
+        "product_type": "BarrierOption",
+        "quantity": 750,
+        "product_kwargs": {
+          "strike": 100.0,
+          "option_type": "CALL",
+          "maturity": 0.5,
+          "barrier": 130.0,
+          "barrier_type": "UP_OUT"
+        }
+      }
+    ],
+    "risk_runs": [
+      {
+        "alias": "stale",
+        "portfolio": "control",
+        "status": "completed",
+        "method": "summary",
+        "created_at": "2026-06-22T16:00:00",
+        "metrics": {
+          "valuation_as_of": "2026-06-22T16:00:00",
+          "by_currency": {
+            "USD": {
+              "delta": 573.3,
+              "gamma": 21.4,
+              "vega": 349.5,
+              "theta": -39.5,
+              "rho": 359.5,
+              "delta_cash": 86046.8,
+              "market_value": 17268.3,
+              "position_count": 3
+            }
+          },
+          "shared": {
+            "delta_proxy": 573.3
+          },
+          "positions": [
+            {
+              "position_id": "$seed.positions.pos-aapl.id",
+              "underlying": "AAPL",
+              "product_type": "EuropeanVanillaOption",
+              "quantity": 1000,
+              "delta": 573.3,
+              "gamma": 18.2,
+              "vega": 250.1,
+              "price": 9.25,
+              "market_value": 9246.3,
+              "greeks_ok": true,
+              "pricing_ok": true,
+              "currency": "USD",
+              "spot": 100.0
+            },
+            {
+              "position_id": "$seed.positions.pos-tsla.id",
+              "underlying": "TSLA",
+              "product_type": "EuropeanVanillaOption",
+              "quantity": 500,
+              "delta": 293.9,
+              "gamma": 9.1,
+              "vega": 120.4,
+              "price": 13.53,
+              "market_value": 6765.2,
+              "greeks_ok": true,
+              "pricing_ok": true,
+              "currency": "USD",
+              "spot": 100.0
+            },
+            {
+              "position_id": "$seed.positions.pos-nvda.id",
+              "underlying": "NVDA",
+              "product_type": "BarrierOption",
+              "quantity": 750,
+              "delta": -6.8,
+              "gamma": 0.4,
+              "vega": -21.0,
+              "price": 1.68,
+              "market_value": 1256.8,
+              "greeks_ok": true,
+              "pricing_ok": true,
+              "currency": "USD",
+              "spot": 100.0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "replay": {
+    "step-1-read-stale-risk": {
+      "ai": {
+        "content": "I'll check the latest risk run for the control portfolio.",
+        "tool_calls": [
+          {
+            "id": "call_s1_001",
+            "name": "get_latest_risk_run_tool",
+            "args": {
+              "portfolio_id": 6
+            }
+          }
+        ]
+      },
+      "tool_results": [
+        {
+          "tool_call_id": "call_s1_001",
+          "name": "get_latest_risk_run_tool",
+          "content": {
+            "id": 1,
+            "portfolio_id": 6,
+            "as_of": "2026-06-22",
+            "status": "completed",
+            "total_delta": -250000.0,
+            "total_gamma": -12000.0,
+            "hotspot": {
+              "underlying": "AAPL",
+              "delta": -150000.0
+            },
+            "freshness": "stale"
+          }
+        }
+      ],
+      "skills_routed": [
+        "read-risk-result"
+      ],
+      "artifacts": [],
+      "response_text": "The latest risk run for the control portfolio is **stale** — it was computed on 2026-06-22, which is more than 24 hours ago and therefore out of date. The total delta is -250,000 and AAPL is the largest contributor. I recommend running a fresh risk calculation before taking any action."
+    },
+    "step-2-run-risk": {
+      "ai": {
+        "content": "I'll queue a fresh batch-pricing risk run for the control portfolio.",
+        "tool_calls": [
+          {
+            "id": "call_s2_001",
+            "name": "run_batch_pricing_tool",
+            "args": {
+              "portfolio_id": 6,
+              "profile_id": 3,
+              "task_type": "risk_run"
+            }
+          }
+        ]
+      },
+      "tool_results": [
+        {
+          "tool_call_id": "call_s2_001",
+          "name": "run_batch_pricing_tool",
+          "content": {
+            "task_id": "rp-task-20260624-001",
+            "status": "queued",
+            "portfolio_id": 6,
+            "profile_id": 3
+          }
+        }
+      ],
+      "skills_routed": [
+        "run-risk"
+      ],
+      "artifacts": [],
+      "response_text": "The fresh risk calculation has been queued. Task ID: `rp-task-20260624-001`. The batch-pricing run will recompute all position valuations and risk metrics for the control portfolio using the Control Profile."
+    },
+    "step-3-read-fresh-risk": {
+      "ai": {
+        "content": "I'll retrieve the updated risk run results.",
+        "tool_calls": [
+          {
+            "id": "call_s3_001",
+            "name": "get_latest_risk_run_tool",
+            "args": {
+              "portfolio_id": 6
+            }
+          },
+          {
+            "id": "call_step_3_read_fresh_risk_answer",
+            "name": "record_answer_tool",
+            "args": {
+              "answer": {
+                "hotspot": "AAPL",
+                "delta": 573.3467058766552
+              }
+            }
+          }
+        ]
+      },
+      "tool_results": [
+        {
+          "tool_call_id": "call_s3_001",
+          "name": "get_latest_risk_run_tool",
+          "content": {
+            "found": true,
+            "portfolio_id": 2,
+            "risk_run_id": 2,
+            "status": "completed",
+            "valuation_as_of": "2026-06-24",
+            "metrics": {
+              "totals": {
+                "delta_cash": 86046.84,
+                "pnl": 17268.28,
+                "market_value": 17268.28
+              },
+              "positions": [
+                {
+                  "position_id": 8,
+                  "underlying": "AAPL",
+                  "delta": 573.3467,
+                  "gamma": 8.7944,
+                  "delta_cash": 57334.67,
+                  "market_value": 9246.35
+                },
+                {
+                  "position_id": 9,
+                  "underlying": "TSLA",
+                  "delta": 210.0,
+                  "gamma": 4.1
+                },
+                {
+                  "position_id": 10,
+                  "underlying": "NVDA",
+                  "delta": 77.0,
+                  "gamma": 8.6
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "skills_routed": [
+        "read-risk-result"
+      ],
+      "artifacts": [],
+      "response_text": "The updated risk run is fresh as of 2026-06-24. The hotspot is **AAPL** (position 8) with a delta of 573.35 — by far the largest Greek contributor across the portfolio. TSLA and NVDA carry smaller delta."
+    },
+    "step-4-greeks-landscape": {
+      "ai": {
+        "content": "I'll run a Greeks landscape across spot shifts for the control portfolio.",
+        "tool_calls": [
+          {
+            "id": "call_s4_001",
+            "name": "run_greeks_landscape_tool",
+            "args": {
+              "portfolio_id": 6,
+              "spot_shifts": [
+                -0.2,
+                -0.1,
+                -0.05,
+                0.0,
+                0.05,
+                0.1,
+                0.2
+              ]
+            }
+          },
+          {
+            "id": "call_s4_002",
+            "name": "get_greeks_landscape_run_tool",
+            "args": {
+              "run_id": 101
+            }
+          }
+        ]
+      },
+      "tool_results": [
+        {
+          "tool_call_id": "call_s4_001",
+          "name": "run_greeks_landscape_tool",
+          "content": {
+            "task_id": "gl-task-20260624-001",
+            "status": "queued",
+            "portfolio_id": 6
+          }
+        },
+        {
+          "tool_call_id": "call_s4_002",
+          "name": "get_greeks_landscape_run_tool",
+          "content": {
+            "found": true,
+            "run_id": 1,
+            "portfolio_id": 2,
+            "status": "completed",
+            "results": {
+              "portfolio": {
+                "raw": [
+                  {
+                    "spot_shift_pct": -20.0,
+                    "delta": 391.192,
+                    "gamma": 22.4499
+                  },
+                  {
+                    "spot_shift_pct": 0.0,
+                    "delta": 860.47,
+                    "gamma": 21.38
+                  },
+                  {
+                    "spot_shift_pct": 10.0,
+                    "delta": 1049.92,
+                    "gamma": 16.403
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "skills_routed": [
+        "run-greeks-landscape"
+      ],
+      "artifacts": [],
+      "response_text": "The Greeks landscape is complete (task `gl-task-20260624-001`). At current spot the portfolio has delta 860 and gamma 21. A 20% down move brings delta to 391, while gamma is 16 at a +10% shift. The book is long delta and gamma across the grid, and I'll monitor intraday."
+    },
+    "step-5-scenario-test": {
+      "ai": {
+        "content": "I'll run the market-crash scenario stress test for the control portfolio.",
+        "tool_calls": [
+          {
+            "id": "call_s5_001",
+            "name": "run_scenario_test_tool",
+            "args": {
+              "portfolio_id": 6,
+              "predefined": ["market_crash"]
+            }
+          },
+          {
+            "id": "call_s5_002",
+            "name": "get_scenario_test_run_tool",
+            "args": {
+              "run_id": 201
+            }
+          },
+          {
+            "id": "call_step_5_scenario_test_answer",
+            "name": "record_answer_tool",
+            "args": {
+              "answer": {
+                "cvar": -7758.989817924667
+              }
+            }
+          }
+        ]
+      },
+      "tool_results": [
+        {
+          "tool_call_id": "call_s5_001",
+          "name": "run_scenario_test_tool",
+          "content": {
+            "task_id": "st-task-20260624-001",
+            "status": "queued",
+            "portfolio_id": 6,
+            "predefined": ["market_crash"]
+          }
+        },
+        {
+          "tool_call_id": "call_s5_002",
+          "name": "get_scenario_test_run_tool",
+          "content": {
+            "run_id": 201,
+            "task_id": "st-task-20260624-001",
+            "status": "completed",
+            "results": {
+              "worst_scenario": "Market Crash",
+              "var_cvar": {
+                "var": -7758.99,
+                "cvar": -7758.99,
+                "confidence": 0.95
+              },
+              "scenarios": [
+                {
+                  "name": "Market Crash",
+                  "pnl": -7758.99
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "skills_routed": [
+        "run-scenario-test"
+      ],
+      "artifacts": [],
+      "response_text": "Stress-test complete (task `st-task-20260624-001`). Under the market-crash scenario set the portfolio shows a worst-case P&L of **-7,759** (Market Crash analog). CVaR at 95% confidence is -7,759. The scenario produces negative P&L, confirming material tail risk."
+    },
+    "step-6-backtest": {
+      "ai": {
+        "content": "I'll run a quarterly backtest of the delta-hedge strategy.",
+        "tool_calls": [
+          {
+            "id": "call_s6_001",
+            "name": "run_backtest_tool",
+            "args": {
+              "portfolio_id": 6,
+              "start_date": "2026-03-24",
+              "end_date": "2026-06-24"
+            }
+          },
+          {
+            "id": "call_s6_002",
+            "name": "get_backtest_run_tool",
+            "args": {
+              "run_id": 301
+            }
+          }
+        ]
+      },
+      "tool_results": [
+        {
+          "tool_call_id": "call_s6_001",
+          "name": "run_backtest_tool",
+          "content": {
+            "task_id": "bt-task-20260624-001",
+            "status": "queued",
+            "portfolio_id": 6,
+            "start_date": "2026-03-24",
+            "end_date": "2026-06-24"
+          }
+        },
+        {
+          "tool_call_id": "call_s6_002",
+          "name": "get_backtest_run_tool",
+          "content": {
+            "run_id": 301,
+            "task_id": "bt-task-20260624-001",
+            "status": "completed",
+            "cumulative_hedge_pnl": -3046.62,
+            "sharpe": -21.8,
+            "max_drawdown": -3046.62,
+            "trading_days": 62
+          }
+        }
+      ],
+      "skills_routed": [
+        "run-backtest"
+      ],
+      "artifacts": [],
+      "response_text": "Backtest complete (task `bt-task-20260624-001`). Over the past quarter (62 trading days) the delta-hedge strategy generated cumulative P&L of -3,047 with a negative Sharpe and max drawdown of -3,047. The hedge lagged in the flat replay window; worth revisiting the rebalance band."
+    },
+    "step-7-create-report": {
+      "ai": {
+        "content": "I'll create the governance risk report for today's control session.",
+        "tool_calls": [
+          {
+            "id": "call_s7_001",
+            "name": "write_report_artifact_tool",
+            "args": {
+              "portfolio_id": 6,
+              "title": "Control Day Risk Report — 2026-06-24",
+              "include_risk_run": true,
+              "include_scenario_test": true,
+              "include_backtest": true
+            }
+          }
+        ]
+      },
+      "tool_results": [
+        {
+          "tool_call_id": "call_s7_001",
+          "name": "write_report_artifact_tool",
+          "content": {
+            "report_id": "rpt-20260624-control",
+            "title": "Control Day Risk Report — 2026-06-24",
+            "status": "created",
+            "artifacts": [
+              {
+                "kind": "text",
+                "path": "/trading_desk/reports/rpt-20260624-control.md",
+                "title": "Control Day Risk Report — 2026-06-24",
+                "url": "/trading_desk/reports/rpt-20260624-control"
+              }
+            ]
+          }
+        }
+      ],
+      "skills_routed": [
+        "generate-report"
+      ],
+      "artifacts": [
+        {
+          "kind": "text",
+          "path": "/trading_desk/reports/rpt-20260624-control.md",
+          "title": "Control Day Risk Report — 2026-06-24",
+          "url": "/trading_desk/reports/rpt-20260624-control",
+          "content": "# Control Day Risk Report — 2026-06-24\n\n## Risk run\nHotspot: AAPL, net delta 573.35, gamma 18.4. Total portfolio delta 860.\n\n## Greeks landscape\nGamma at +10% spot 16.40; delta at -20% spot 391.19.\n\n## Scenario stress (market_crash)\nWorst-case P&L -7,759 (Market Crash analog); CVaR at 95% confidence -7,759.\n\n## Backtest\nDelta-hedge historical replay 2026-03-24 → 2026-06-24: cumulative hedge P&L -3,047; no autocallable lifecycle events."
+        }
+      ],
+      "response_text": "The governance risk report has been created. Report ID: `rpt-20260624-control`. The report bundles today's risk run (hotspot: AAPL), Greeks landscape, market-crash scenario results (worst-case P&L: -7,759), and quarterly backtest summary. It is now available as a durable artifact for the governance record."
+    },
+    "step-grid-comprehension": {
+      "ai": {
+        "content": "Reading the completed landscape grid for the answer.",
+        "tool_calls": [
+          {
+            "id": "call_step_grid_comprehension_answer",
+            "name": "record_answer_tool",
+            "args": {
+              "answer": {
+                "gamma_at_+10pct": 16.403033928381223,
+                "delta_at_-20pct": 391.1919745962153
+              }
+            }
+          }
+        ]
+      },
+      "tool_results": [],
+      "skills_routed": [],
+      "artifacts": [],
+      "response_text": "From the completed Greeks landscape: portfolio gamma at a +10% spot shift is 16.40, and at a -20% shift the portfolio delta becomes 391.19. Gamma flattens as spot rises while delta shortens on the downside."
+    },
+    "step-trap-missing-scenario-set": {
+      "ai": {
+        "content": "Checking the scenario library before running anything.",
+        "tool_calls": [
+          {
+            "id": "call_s8_001",
+            "name": "list_scenario_library_tool",
+            "args": {}
+          },
+          {
+            "id": "call_step_8_trap_answer",
+            "name": "record_answer_tool",
+            "args": {
+              "answer": {
+                "scenario_run_id": null
+              }
+            }
+          }
+        ]
+      },
+      "tool_results": [
+        {
+          "tool_call_id": "call_s8_001",
+          "name": "list_scenario_library_tool",
+          "content": {
+            "predefined": [
+              "market_crash",
+              "market_rally",
+              "vol_spike",
+              "vol_crush",
+              "rate_hike",
+              "rate_cut",
+              "severe_downturn",
+              "inflation_shock",
+              "black_monday_1987",
+              "financial_crisis_2008",
+              "covid_crash_2020"
+            ],
+            "custom": []
+          }
+        }
+      ],
+      "skills_routed": [],
+      "artifacts": [],
+      "response_text": "There is no scenario set named 'stagflation-shock-2011' — it is not in the scenario library and not available as a predefined set. The closest predefined alternatives are market_crash and severe_downturn; say the word and I'll run one of those with the Control Profile instead."
+    }
+  }
+}
