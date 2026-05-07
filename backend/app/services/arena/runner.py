@@ -1,0 +1,1352 @@
+"""Arena match runner.
+
+Drives a single arena match against the REAL desk orchestrator:
+  1. seed the workflow's fixtures into the main DB (fresh IDs per match),
+  2. create an arena-tagged AgentThread,
+  3. drive each workflow step through AgentService.stream_and_persist bound to
+     the candidate Zenmux model,
+  4. reconstruct the MatchTranscript from the persisted trace spans.
+
+Matches run sequentially (the async checkpointer SQLite serialises writes).
+The `drive` and `harvest` seams are injectable for unit tests.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import shutil
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Callable
+
+from app import database
+from app.golden_workflows.fixtures import apply_seed, stage_documents
+from app.models import AgentThread
+from app.services.arena.models import arena_model_to_selection
+from app.services.arena.trace_harvest import (
+    collect_portfolio_creations,
+    collect_portfolio_ids_created,
+    collect_report_creations,
+    collect_report_ids_created,
+    collect_rfq_ids_touched,
+    collect_confirmation_batch_ids_created,
+    collect_scenario_set_names_saved,
+    transcript_from_trace,
+)
+
+logger = logging.getLogger(__name__)
+
+_PERSONA_TO_CHARACTER = {
+    "trader": "trader",
+    "risk_manager": "risk_manager",
+    "high_board": "high_board",
+    "sales": "trader",
+    "quant": "trader",
+}
+
+_ARENA_SERVICE = None
+
+# Between-steps task settle: poll until the match's queued background tasks
+# finish so a later step reads completed results (e.g. the fresh risk run).
+TASK_SETTLE_MAX_ATTEMPTS = 150
+TASK_SETTLE_SLEEP_SECONDS = 2.0
+
+
+def _persona_to_character(persona: str) -> str:
+    return _PERSONA_TO_CHARACTER.get(persona, "trader")
+
+
+def _wait_for_pending_tasks(
+    baseline_task_id: int,
+    *,
+    max_attempts: int = TASK_SETTLE_MAX_ATTEMPTS,
+    sleep_seconds: float = TASK_SETTLE_SLEEP_SECONDS,
+) -> None:
+    """Block until every TaskRun created after *baseline_task_id* is terminal.
+
+    Workflow tools (run_batch_pricing, run_scenario_test, …) queue a TaskRun that
+    a process-global thread pool executes asynchronously. Without waiting, the
+    next workflow step would read stale results. The arena's own ARENA_RUN task
+    is excluded so this never waits on itself. Bounded by *max_attempts* so a
+    stuck task degrades to stale data rather than hanging the match forever.
+    """
+    import time
+
+    from app import database
+    from app.models import TaskKind, TaskRun, TaskStatus
+
+    terminal = {
+        TaskStatus.COMPLETED.value,
+        TaskStatus.COMPLETED_WITH_ERRORS.value,
+        TaskStatus.FAILED.value,
+    }
+    for _ in range(max_attempts):
+        with database.SessionLocal() as session:
+            pending = (
+                session.query(TaskRun.id)
+                .filter(
+                    TaskRun.id > baseline_task_id,
+                    TaskRun.kind != TaskKind.ARENA_RUN.value,
+                    TaskRun.status.notin_(terminal),
+                )
+                .count()
+            )
+        if pending == 0:
+            return
+        time.sleep(sleep_seconds)
+
+
+def _make_default_settle():
+    """Snapshot the TaskRun high-water mark now, return a between-steps waiter."""
+    from sqlalchemy import func
+
+    from app import database
+    from app.models import TaskRun
+
+    with database.SessionLocal() as session:
+        baseline = session.query(func.max(TaskRun.id)).scalar() or 0
+
+    def settle() -> None:
+        _wait_for_pending_tasks(baseline)
+
+    return settle
+
+
+def _get_arena_service():
+    """Lazily build one AgentService for the process (model is rebound per turn)."""
+    global _ARENA_SERVICE
+    if _ARENA_SERVICE is None:
+        from app.services.agents import AgentService
+        _ARENA_SERVICE = AgentService()
+    return _ARENA_SERVICE
+
+
+# The LLM clients' process-wide async connection pools: (module, lru_cached
+# factory). Private names — tests/test_arena_http_pool_reset.py pins that they
+# still exist, so a library upgrade that renames one fails a test instead of
+# silently bringing the dead-loop failure back.
+_ASYNC_HTTP_CLIENT_CACHES: tuple[tuple[str, str], ...] = (
+    ("langchain_openai.chat_models._client_utils", "_cached_async_httpx_client"),
+    ("langchain_anthropic._client_utils", "_get_default_async_httpx_client"),
+)
+
+
+def _reset_async_http_pools() -> None:
+    """Give the next step's event loop fresh LLM connection pools.
+
+    langchain-openai and langchain-anthropic ``lru_cache`` ONE ``httpx.AsyncClient``
+    per (base_url, timeout) for the whole process, while every step here runs in
+    its own ``asyncio.run`` loop. A keep-alive connection left idle in that pool
+    belongs to a loop that is already closed, and the next step to draw it fails
+    its model call with ``RuntimeError: Event loop is closed`` — run #143 thread
+    1128 lost gpt-6-luna's whole high-board step 1 this way. The desk server
+    runs one loop for its lifetime, so only per-step loops need this.
+    """
+    import importlib
+
+    for module_name, attr in _ASYNC_HTTP_CLIENT_CACHES:
+        try:
+            factory = getattr(importlib.import_module(module_name), attr)
+        except (ImportError, AttributeError):
+            continue
+        factory.cache_clear()
+
+
+def _persist_user_turn(thread_id: int, content: str, selection: dict) -> None:
+    """Insert the user AgentMessage for this turn, mirroring the chat endpoint.
+
+    ``AgentService.stream_and_persist`` assumes the caller has already inserted
+    the user message (the HTTP endpoint does this before streaming). Without it
+    the routed-stream turn cannot attach the route to the latest user message and
+    later turns lose the real prompts from DB-backed thread history.
+    """
+    from app import database
+    from app.models import AgentMessage
+
+    with database.SessionLocal() as session:
+        session.add(
+            AgentMessage(
+                thread_id=thread_id,
+                role="user",
+                character=None,
+                content=content,
+                meta={
+                    "model_selection": selection,
+                    "yolo_mode": True,
+                    "confirmed_cost_preview": True,
+                },
+            )
+        )
+        session.commit()
+
+
+# The arena measures whether a model can operate the desk as a human would
+# WITHOUT human intervention. It drives every turn in YOLO (headless) mode: HITL
+# interrupts are auto-cleared AND the propose_reply_options card tool is withheld,
+# so the model cannot defer to a human and must execute on its own judgement.
+# There is no faked-human answering of cards (which previously caused target
+# drift), so each workflow step maps to exactly one driven turn.
+ARENA_MODE = "yolo"
+
+
+def _drive_step(
+    thread_id: int,
+    content: str,
+    selection: dict,
+    *,
+    accounting_date: str | None,
+    extractor_selection: dict | None = None,
+) -> None:
+    """Drive one desk turn to completion via stream_and_persist in YOLO mode.
+
+    The transcript is harvested from the trace afterwards, so the streamed SSE
+    events are consumed and discarded here. ``accounting_date`` pins the agent's
+    Accounting anchor (a workflow-seeded concluded trading day); None leaves the
+    service default (real current date).
+
+    ``extractor_selection`` pins the model that reads confirmation documents. It
+    is stamped onto ``configurable`` server-side and is the whole mechanism by
+    which a vision workflow grades the CONTESTANT rather than whichever model
+    holds the ``confirmation_extractor`` tag.
+    """
+    _persist_user_turn(thread_id, content, selection)
+    svc = _get_arena_service()
+
+    async def _run() -> None:
+        async for _chunk in svc.stream_and_persist(
+            thread_id=thread_id,
+            content=content,
+            model_selection=selection,
+            mode=ARENA_MODE,
+            confirmed_cost_preview=True,
+            accounting_date=accounting_date,
+            extractor_selection=extractor_selection,
+        ):
+            pass
+
+    _reset_async_http_pools()
+    asyncio.run(_run())
+
+
+def _default_drive(thread_id: int, content: str, selection: dict) -> None:
+    """Drive one step with no accounting-date override (service default anchor)."""
+    _drive_step(thread_id, content, selection, accounting_date=None)
+
+
+def _make_default_drive(
+    accounting_date: str | None, route_extractor_to_contestant: bool = False
+):
+    """Build the default step driver pinning the workflow's accounting date.
+
+    A workflow may seed ``accounting_date`` (a concluded past trading day) so
+    live market-data fetches on the anchor date always return rows — anchoring
+    on the real run date lets a model query a not-yet-concluded session and
+    stall on an empty window (Run #26).
+
+    ``route_extractor_to_contestant`` (from the manifest's
+    ``extractor_model: contestant``) makes THIS MATCH's own selection the
+    document-extraction model. The selection is already the one being driven, so
+    there is nothing extra to thread through ``run_match`` — the driver simply
+    re-uses what it is handed.
+    """
+    def _drive(thread_id: int, content: str, selection: dict) -> None:
+        _drive_step(
+            thread_id, content, selection,
+            accounting_date=accounting_date,
+            extractor_selection=selection if route_extractor_to_contestant else None,
+        )
+
+    return _drive
+
+
+ARENA_PORTFOLIO_TAG = "arena"
+ARENA_PROFILE_MARKER = "arena_owned"  # set in PricingParameterProfile.summary
+ARENA_RFQ_CLIENT_PREFIX = "ARENA"  # the step-1 turn names the client with this prefix
+# Reserved arena-private ReportJob.report_type for seeded governance evidence
+# (high-board workflow). No production/user report path emits this value, so the
+# recovery purge can delete every row of this type safely.
+ARENA_REPORT_MARKER = "arena_high_board_governance"
+
+
+def _purge_seeded_reports(session) -> None:
+    """Recovery purge: delete EVERY ReportJob carrying the reserved arena-private
+    marker report_type, so a freshly seeded match starts from a clean slate and the
+    display-report step can only find the report this match just seeded.
+
+    Safe because ARENA_REPORT_MARKER is a RESERVED report_type — an arena-private
+    string no production/user/normal report path emits (same convention as
+    ARENA_PORTFOLIO_TAG / ARENA_PROFILE_MARKER). Race-free under the documented
+    sequential-matches invariant. Commits NOW (mirrors _purge_seeded_portfolios) so
+    the delete is durable even if the subsequent apply_seed raises."""
+    from sqlalchemy import delete
+
+    from app import models
+    session.execute(
+        delete(models.ReportJob).where(models.ReportJob.report_type == ARENA_REPORT_MARKER)
+    )
+    session.commit()
+
+
+def _purge_arena_rfqs(session, rfq_ids) -> None:
+    """ORM-delete the given RFQ rows so quote_versions/approvals cascade
+    (both relationships are cascade='all, delete-orphan')."""
+    if not rfq_ids:
+        return
+    from app import models
+
+    for rfq in session.query(models.RFQ).filter(models.RFQ.id.in_(list(rfq_ids))):
+        session.delete(rfq)
+    session.commit()
+
+
+def _purge_arena_market_quotes(session) -> None:
+    """Delete EVERY market_quotes row carrying the arena-seed origin tag.
+
+    Seeded quotes pin a real historical close so profile-bound pricing/risk
+    reads the right market (Run #26 follow-up), but they are benchmark-private
+    rows — not fetcher-written observations — and must never leak into the
+    desk's live quote store. Safe: nothing FK-references market_quotes.id.
+    Runs pre-seed (a prior match's residue) and in the post-match finally.
+    """
+    from sqlalchemy import delete
+
+    from app import models
+    from app.golden_workflows.fixtures import ARENA_MARKET_SOURCE
+
+    session.execute(
+        delete(models.MarketQuote).where(models.MarketQuote.source == ARENA_MARKET_SOURCE)
+    )
+    session.commit()
+
+
+def _purge_match_rfqs(thread_id: int, rfq_id_baseline: int) -> None:
+    """Best-effort cleanup of RFQs CREATED BY THIS MATCH: harvested (touched) ids,
+    created after the pre-match baseline, AND carrying the arena client sentinel.
+
+    Runs in a ``finally`` so an aborted match still cleans up. This matters because
+    a leaked RFQ would otherwise be PERMANENT: the next match's baseline is taken
+    after the leaked row already exists, so its ``id > baseline`` guard would never
+    re-catch it. Fail-safe — a missing sentinel skips the row (cosmetic leak), never
+    a real/seeded RFQ deleted. Never raises: cleanup is cosmetic hygiene and must not
+    mask a match failure.
+    """
+    from app import models
+
+    try:
+        touched = collect_rfq_ids_touched(thread_id)
+        candidates = {rid for rid in touched if rid > rfq_id_baseline}
+        if not candidates:
+            return
+        with database.SessionLocal() as session:
+            owned = [
+                r.id
+                for r in session.query(models.RFQ).filter(models.RFQ.id.in_(candidates))
+                if (r.client_name or "").startswith(ARENA_RFQ_CLIENT_PREFIX)
+            ]
+            _purge_arena_rfqs(session, owned)
+    except Exception:  # noqa: BLE001 — best-effort; never mask the match outcome
+        logger.warning("arena RFQ cleanup failed for thread %s", thread_id, exc_info=True)
+
+
+def _purge_match_confirmations(thread_id: int, batch_id_baseline: int) -> None:
+    """Best-effort cleanup of confirmation batches CREATED BY THIS MATCH.
+
+    Needed because ``_delete_portfolios_with_dependents`` CANNOT reach them.
+    That sweep finds dependents by scanning for columns literally named
+    ``portfolio_id`` / ``position_id`` and then recursing over foreign keys -- but
+    the recursion explicitly skips the portfolios table itself
+    (``if child is parent_table or child is portfolio_table: continue``).
+    ``ConfirmationBatch.default_portfolio_id`` is an FK to ``portfolios`` under a
+    DIFFERENT column name, so a batch parsed into the arena book is never swept
+    and the final portfolio delete dies on a foreign-key constraint.
+    (``ExtractedTrade.booked_position_id`` IS reachable, via the recursion from
+    ``positions``, so the leak is exactly one table wide -- and fatal.)
+
+    Runs in a ``finally`` for the same reason as ``_purge_match_rfqs``: the next
+    baseline is taken above a leaked row, so its own guard could never re-catch
+    it. Never raises -- cleanup is hygiene and must not mask a match failure.
+    """
+    from sqlalchemy import delete
+
+    from app import models
+
+    try:
+        created = collect_confirmation_batch_ids_created(thread_id)
+        doomed = {bid for bid in created if bid > batch_id_baseline}
+        if not doomed:
+            return
+        with database.SessionLocal() as session:
+            doc_ids = [
+                d.id
+                for d in session.query(models.ConfirmationDocument).filter(
+                    models.ConfirmationDocument.batch_id.in_(doomed)
+                )
+            ]
+            if doc_ids:
+                session.execute(
+                    delete(models.ExtractedTrade).where(
+                        models.ExtractedTrade.document_id.in_(doc_ids)
+                    )
+                )
+                session.execute(
+                    delete(models.ConfirmationDocument).where(
+                        models.ConfirmationDocument.id.in_(doc_ids)
+                    )
+                )
+            session.execute(
+                delete(models.ConfirmationBatch).where(
+                    models.ConfirmationBatch.id.in_(doomed)
+                )
+            )
+            session.commit()
+    except Exception:  # noqa: BLE001 — best-effort; never mask the match outcome
+        logger.warning(
+            "arena confirmation cleanup failed for thread %s", thread_id,
+            exc_info=True,
+        )
+
+
+def _delete_portfolios_with_dependents(session, pids, fk_ordered_tables=None) -> None:
+    """Delete portfolios ``pids`` plus every row referencing them, children first.
+
+    Dependents are found by introspecting every mapped table for a ``portfolio_id``
+    or ``position_id`` column, which covers risk runs, valuations, scenario/backtest
+    runs, hedge rows and position children without hard-coding table names. Deletes
+    run in reverse FK-dependency order because FK enforcement is ON (see
+    database.py): ``task_runs`` reference run rows (risk_run_id /
+    scenario_test_run_id / backtest_run_id) as well as ``portfolio_id``, so they
+    must go before the run rows they point at.
+
+    OWNERSHIP IS THE CALLER'S JOB — this helper re-checks no tag, name or baseline.
+    Shared by ``_purge_seeded_portfolios`` (tag + fixture-name scoped) and
+    ``_purge_match_portfolios`` (trace-harvested + baseline scoped).
+    """
+    import warnings
+
+    from sqlalchemy import delete, select
+    from sqlalchemy.exc import SAWarning
+
+    from app import models
+
+    if not pids:
+        return
+    if fk_ordered_tables is None:
+        # sorted_tables warns about an unrelated FK cycle among the agent_*/workflows
+        # tables; none of those carry portfolio_id/position_id, so they fall outside
+        # the purge scope and the ordering of the tables we touch stays correct.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SAWarning)
+            fk_ordered_tables = list(reversed(models.Base.metadata.sorted_tables))
+    posids = list(
+        session.scalars(
+            select(models.Position.id).where(models.Position.portfolio_id.in_(pids))
+        )
+    )
+    # The limit-incident tables are append-only for every desk path
+    # (models._protect_limit_incident_events_from_bulk_mutation), but this purge owns
+    # the arena rows wholesale — incident rows on them are fixture state, not
+    # compliance history. Flag the session so the guard exempts exactly this scope.
+    session.info[models.ARENA_FIXTURE_PURGE_INFO_KEY] = True
+    try:
+        portfolio_table = models.Portfolio.__table__
+
+        def _delete_referencing_children(parent_table, doomed_ids, seen) -> None:
+            """Recursively delete rows pointing at ``doomed_ids`` in ``parent_table``.
+
+            RUN-CHILD tables key off a run row's PK, NOT the portfolio — e.g.
+            ``position_valuation_results.valuation_run_id`` →
+            ``position_valuation_runs.id``, with no ``portfolio_id`` column at all.
+            Their ``position_id`` only helps when the purged portfolio OWNS positions,
+            so the gap is invisible for a container and fatal for a VIEW (which owns
+            none): the results rows survive and the run delete dies on FOREIGN KEY
+            constraint failed. Models create VIEWS here, so this is the common case.
+            """
+            if not doomed_ids:
+                return
+            for child in fk_ordered_tables:
+                if child is parent_table or child is portfolio_table:
+                    continue
+                for fk in child.foreign_keys:
+                    if fk.column.table is not parent_table:
+                        continue
+                    col = child.c[fk.parent.name]
+                    if "id" in child.c:  # descend before deleting this level
+                        grand = list(
+                            session.scalars(select(child.c.id).where(col.in_(doomed_ids)))
+                        )
+                        key = (child.name, tuple(sorted(grand)))
+                        if grand and key not in seen:
+                            seen.add(key)
+                            _delete_referencing_children(child, grand, seen)
+                    session.execute(delete(child).where(col.in_(doomed_ids)))
+
+        # Sweep run-children first, so the portfolio_id/position_id passes below can
+        # delete the run rows themselves without tripping an FK.
+        seen: set = set()
+        for table in fk_ordered_tables:
+            if table is portfolio_table or "id" not in table.c:
+                continue
+            doomed: list = []
+            if "portfolio_id" in table.c:
+                doomed += list(
+                    session.scalars(select(table.c.id).where(table.c.portfolio_id.in_(pids)))
+                )
+            if posids and "position_id" in table.c:
+                doomed += list(
+                    session.scalars(select(table.c.id).where(table.c.position_id.in_(posids)))
+                )
+            _delete_referencing_children(table, doomed, seen)
+
+        for table in fk_ordered_tables:
+            if table is portfolio_table:
+                continue
+            if posids and "position_id" in table.c:
+                session.execute(delete(table).where(table.c.position_id.in_(posids)))
+            if "portfolio_id" in table.c:
+                session.execute(delete(table).where(table.c.portfolio_id.in_(pids)))
+        session.execute(delete(portfolio_table).where(portfolio_table.c.id.in_(pids)))
+    finally:
+        session.info.pop(models.ARENA_FIXTURE_PURGE_INFO_KEY, None)
+
+
+def _purge_match_portfolios(thread_id: int, portfolio_id_baseline: int) -> None:
+    """Best-effort cleanup of portfolios CREATED BY THIS MATCH: ids harvested from
+    this thread's ``create_portfolio`` spans AND above the pre-match baseline.
+
+    Runs in a ``finally`` so an aborted match still cleans up, and for the same
+    reason as ``_purge_match_rfqs``: a leak here is PERMANENT, because the next
+    match's baseline is taken after the leaked row already exists so its
+    ``id > baseline`` guard can never re-catch it.
+
+    Why this matters beyond tidiness: ``_purge_seeded_portfolios`` is scoped to rows
+    carrying ``ARENA_PORTFOLIO_TAG`` *and* sharing a current-bundle fixture name, but
+    a model's own ``create_portfolio`` tags nothing and picks its own name — so those
+    rows were never purged at all. Run #58 left 23 orphan "Board Review" views in the
+    real DB. The golden workflows resolve books BY NAME, so each leaked near-homonym
+    makes the NEXT match's name resolution harder than the last: the benchmark stops
+    being stationary and scores get biased by position in the field.
+
+    Fail-safe: requires BOTH the trace evidence and the baseline, so a pre-existing
+    real or seeded portfolio the agent merely read is never touched. Never raises —
+    cleanup is hygiene and must not mask a match failure.
+    """
+    from app import models
+
+    try:
+        created = collect_portfolio_ids_created(thread_id)
+        pids = sorted(pid for pid in created if pid > portfolio_id_baseline)
+        if not pids:
+            return
+        with database.SessionLocal() as session:
+            # Ownership is the TRACE + BASELINE pair, and deliberately NOT the tag.
+            # An earlier version skipped rows carrying ARENA_PORTFOLIO_TAG (meaning to
+            # leave fixture rows to the seeded purge) — but the tag is MODEL-WRITABLE:
+            # a live smoke created "Board Review View" tagged ["board-review","arena"],
+            # so its own creation was skipped and leaked. The NEXT match then found the
+            # leftover view, REUSED it instead of creating one, and cascaded into
+            # failures. The tag check was also redundant: `create_portfolio` mints a NEW
+            # id, so a fixture row can never appear in the harvest, and `id > baseline`
+            # already excludes everything that predates the match.
+            existing = [
+                p.id
+                for p in session.query(models.Portfolio.id).filter(
+                    models.Portfolio.id.in_(pids)
+                )
+            ]
+            _delete_portfolios_with_dependents(session, existing)
+            session.commit()
+    except Exception:  # noqa: BLE001 — best-effort; never mask the match outcome
+        logger.warning(
+            "arena portfolio cleanup failed for thread %s", thread_id, exc_info=True
+        )
+
+
+def _scrub_dangling_scope_portfolio_ids(session, purged_portfolio_ids) -> None:
+    """Remove just-deleted portfolio ids from every arena-owned RiskLimitVersion's
+    ``scope_config["portfolio_ids"]``.
+
+    ``risk_limits``/``risk_limit_versions`` are protected-immortal (ensure-by-key
+    reuses them across matches) and their ``scope_config`` names the portfolio(s)
+    they govern by id — but that portfolio is exactly what this function's caller
+    just deleted. Left alone, the version keeps pointing at a freed id, and SQLite
+    reuses a freed max rowid: the next portfolio created — including a real desk
+    book, if the next arena match never runs — can inherit it and silently join
+    every monitoring run there (an active hard-cap limit auto-opening incidents on
+    someone else's book, undetectable by ``_assert_no_foreign_active_limits``,
+    which only checks NON-portfolio-scoped foreign limits).
+    Scoped to ``created_by_actor == "arena_seed"`` on the PARENT ``RiskLimit`` —
+    never a desk-authored limit that happens to reference a purged portfolio, the
+    same ownership discipline as the rest of this module. Clearing to an empty
+    list is acceptable: the next match's ensure-update (fixtures.py
+    ``risk_limit_versions`` branch) re-points ``scope_config`` regardless of
+    whether it ran empty or stale in between.
+    """
+    if not purged_portfolio_ids:
+        return
+    from sqlalchemy import select
+
+    from app import models
+
+    doomed = set(purged_portfolio_ids)
+    versions = session.scalars(
+        select(models.RiskLimitVersion)
+        .join(models.RiskLimit, models.RiskLimit.id == models.RiskLimitVersion.risk_limit_id)
+        .where(
+            models.RiskLimit.created_by_actor == "arena_seed",
+            models.RiskLimitVersion.scope_type == "portfolio",
+        )
+    ).all()
+    for version in versions:
+        config = dict(version.scope_config or {})
+        ids = config.get("portfolio_ids") or []
+        kept = [pid for pid in ids if pid not in doomed]
+        if kept != ids:
+            config["portfolio_ids"] = kept
+            version.scope_config = config
+
+
+#: A create_portfolio span starts a moment before its row is inserted; ids are
+#: reused, so a span far from the row's created_at minted an EARLIER row.
+_ORPHAN_MINT_TOLERANCE = timedelta(seconds=30)
+
+
+def _sweep_orphaned_match_portfolios() -> list[int]:
+    """Pre-match: reclaim portfolios created by a prior match that was KILLED.
+
+    A killed match never reaches the ``finally`` that runs
+    ``_purge_match_portfolios``, and the leak is then permanent: every later
+    match takes its baseline above the row. Run #115 (SIGKILLed 2026-08-19) left
+    a "Board Review" view over id 9101 that — ids being reused — pointed at every
+    later match's freshly seeded "Desk Control Book", and gpt-6-luna@high reused
+    it instead of creating one.
+
+    Ownership: an ARENA thread's create_portfolio span minted this id at this
+    row's ``created_at``. The timestamp stands in for the lost baseline and is
+    what spares an unrelated row that later reused the id. Never raises.
+    Returns the reclaimed ids.
+    """
+    from app import models
+
+    try:
+        creations = collect_portfolio_creations()
+        if not creations:
+            return []
+        with database.SessionLocal() as session:
+            arena_threads = {
+                tid for (tid,) in session.query(AgentThread.id).filter(
+                    AgentThread.source == "arena")
+            }
+            minted: dict[int, list[datetime]] = {}
+            for c in creations:
+                if c["thread_id"] in arena_threads and c.get("start_time"):
+                    at = datetime.fromisoformat(str(c["start_time"]))
+                    if at.tzinfo is not None:
+                        at = at.astimezone(timezone.utc).replace(tzinfo=None)
+                    minted.setdefault(c["portfolio_id"], []).append(at)
+            doomed = [
+                p.id
+                for p in session.query(models.Portfolio).filter(
+                    models.Portfolio.id.in_(minted))
+                if p.created_at is not None and any(
+                    abs(p.created_at - at) <= _ORPHAN_MINT_TOLERANCE
+                    for at in minted[p.id])
+            ]
+            if doomed:
+                _delete_portfolios_with_dependents(session, doomed)
+                session.commit()
+                logger.warning("arena: reclaimed orphaned match portfolios %s", doomed)
+            return doomed
+    except Exception:
+        logger.warning("arena: orphaned-portfolio sweep failed", exc_info=True)
+        return []
+
+
+def _delete_reports(session, report_ids) -> None:
+    """Delete ReportJob rows, first detaching the TaskRuns that point at them.
+
+    ``task_runs.report_job_id`` is a nullable FK; the task row stays as the
+    audit record of the work that was done, it just no longer names a report
+    that is gone.
+    """
+    from sqlalchemy import delete, update
+
+    from app import models
+
+    ids = list(report_ids)
+    if not ids:
+        return
+    session.execute(
+        update(models.TaskRun)
+        .where(models.TaskRun.report_job_id.in_(ids))
+        .values(report_job_id=None)
+    )
+    session.execute(delete(models.ReportJob).where(models.ReportJob.id.in_(ids)))
+
+
+def _purge_match_reports(thread_id: int, report_id_baseline: int) -> None:
+    """Delete the ReportJob rows THIS match's contestant created.
+
+    Ownership is the pair the other purges use: this thread's create_report /
+    generate_report calls named the id (``collect_report_ids_created``), AND the
+    id is above the pre-match high-water mark, so a pre-existing report the
+    model merely read is never touched. Seeded reports are purged separately by
+    id. Runs in the ``finally``; never raises.
+    """
+    try:
+        candidates = {
+            rid for rid in collect_report_ids_created(thread_id)
+            if rid > report_id_baseline
+        }
+        if not candidates:
+            return
+        with database.SessionLocal() as session:
+            _delete_reports(session, candidates)
+            session.commit()
+    except Exception:  # noqa: BLE001 — best-effort; never mask the match outcome
+        logger.warning("arena report cleanup failed for thread %s", thread_id, exc_info=True)
+
+
+def _sweep_orphaned_match_reports() -> list[int]:
+    """Pre-match: reclaim ReportJob rows a prior arena match created but never
+    purged — killed before its ``finally``, or from before report cleanup
+    existed. Report 8 (portfolio 9101, 2026-08-26) is the case in point: every
+    high-board match re-seeds "Desk Control Book" as 9101, so the stale report
+    looked like it belonged to the fresh book and answered "last quarter's board
+    report" with the wrong number.
+
+    Same ownership proof as ``_sweep_orphaned_match_portfolios``: an ARENA
+    thread's create_report / generate_report span minted this id at this row's
+    ``created_at`` (ids are reused). Never raises. Returns the reclaimed ids.
+    """
+    from app import models
+
+    try:
+        creations = collect_report_creations()
+        if not creations:
+            return []
+        with database.SessionLocal() as session:
+            arena_threads = {
+                tid for (tid,) in session.query(AgentThread.id).filter(
+                    AgentThread.source == "arena")
+            }
+            minted: dict[int, list[datetime]] = {}
+            for c in creations:
+                if c["thread_id"] in arena_threads and c.get("start_time"):
+                    at = datetime.fromisoformat(str(c["start_time"]))
+                    if at.tzinfo is not None:
+                        at = at.astimezone(timezone.utc).replace(tzinfo=None)
+                    minted.setdefault(c["report_id"], []).append(at)
+            doomed = [
+                r.id
+                for r in session.query(models.ReportJob).filter(
+                    models.ReportJob.id.in_(minted))
+                if r.created_at is not None and any(
+                    abs(r.created_at - at) <= _ORPHAN_MINT_TOLERANCE
+                    for at in minted[r.id])
+            ]
+            if doomed:
+                _delete_reports(session, doomed)
+                session.commit()
+                logger.warning("arena: reclaimed orphaned match reports %s", doomed)
+            return doomed
+    except Exception:
+        logger.warning("arena: orphaned-report sweep failed", exc_info=True)
+        return []
+
+
+def _purge_seeded_portfolios(session, bundle) -> None:
+    """Delete prior arena-seeded fixture rows sharing a fixture name (portfolios
+    and pricing profiles), plus their dependents, so a re-seed for the next match
+    starts from a clean slate and arena rows never accumulate in the real DB.
+
+    The golden workflows are name-based (the agent resolves "the control
+    portfolio" by name) and ``portfolios.name`` is UNIQUE, so a re-seed would
+    collide unless the prior one is removed first. Pricing-profile names are NOT
+    unique, so they never collide — but they ARE inserted on every match, so
+    without cleanup repeated runs accumulate duplicate "Control Profile" rows in
+    the user's profile list. Both are therefore purged.
+
+    Deletion is scoped to rows THIS module created — portfolios carrying the
+    ``ARENA_PORTFOLIO_TAG`` tag and profiles whose ``summary`` carries
+    ``ARENA_PROFILE_MARKER`` — so a real desk portfolio/profile that happens to
+    share the fixture name is NEVER touched. (A real same-named portfolio instead
+    makes the seed fail cleanly on the unique-name constraint → failed match.)
+
+    Portfolio dependents are removed by introspecting every mapped table for a
+    ``portfolio_id`` or ``position_id`` column, which covers risk runs,
+    valuations, scenario/backtest runs, hedge rows, and position children without
+    hard-coding table names. Deletes run in reverse FK-dependency order (children
+    before parents) because FK enforcement is ON (see database.py): ``task_runs``
+    reference run rows (risk_run_id / scenario_test_run_id / backtest_run_id) as
+    well as ``portfolio_id``, so they must be deleted before the run rows they
+    point at. Profiles are handled last: an arena profile with no surviving
+    run/fx referencer is deleted (owned rows first); one still referenced by a
+    real-book run is RETIRED into the pricing subsystem's archived state
+    (immutable, marker kept for later reclamation) rather than deleted, so that
+    run's provenance is never destroyed — see the inline note.
+    """
+    import warnings
+
+    from sqlalchemy import delete, select
+    from sqlalchemy.exc import SAWarning
+
+    from app import models
+    from app.services.audit import record_audit
+    from app.services.domains.pricing_profiles import ARCHIVED_SOURCE_TYPE
+
+    # sorted_tables warns about an unrelated FK cycle among the agent_*/workflows
+    # tables; none of those carry portfolio_id/position_id, so they fall outside
+    # the purge scope and the ordering of the tables we touch stays correct.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SAWarning)
+        fk_ordered_tables = list(reversed(models.Base.metadata.sorted_tables))
+
+    # --- portfolios + dependents (arena-tagged fixture names, ALL workflows) ---
+    #
+    # Scoped to EVERY registered workflow's fixture names, not just this bundle's
+    # (2026-07-25 validity audit). A this-bundle-only scope left every OTHER
+    # workflow's seeded book alive: high-board matches never reclaimed the trader-rfq
+    # fixture "Arena Trader Desk", which then competed for the phrase "the desk
+    # control book" against the high-board fixture "Desk Control Book". Because it too
+    # holds an NVDA position, a model that resolved the wrong book got a PLAUSIBLE,
+    # well-formed delta and was graded wrong with no error anywhere — Run #58 lost ~7
+    # of 17 models' NVDA grounding and 5-6 models' membership count that way. Lossless:
+    # each match re-seeds its own bundle, so another workflow's fixtures come back when
+    # that workflow next runs.
+    #
+    # The arena TAG alone is deliberately NOT sufficient. It is not server-owned — a
+    # model picks its own tags via create_portfolio and Run #58 caught two views that
+    # spontaneously tagged themselves "arena". Requiring tag AND a known fixture name
+    # keeps a model-created (or user-tagged) row out of this purge's blast radius;
+    # model-created rows are reclaimed by _purge_match_portfolios instead, on
+    # unforgeable trace + baseline evidence.
+    from app.golden_workflows.registry import list_workflow_bundles
+
+    fixture_names = {
+        r["name"]
+        for other in list_workflow_bundles()
+        for r in other.fixtures.seed.get("portfolios", [])
+        if r.get("name")
+    }
+    if fixture_names:
+        candidates = session.scalars(
+            select(models.Portfolio).where(models.Portfolio.name.in_(sorted(fixture_names)))
+        ).all()
+        pids = [p.id for p in candidates if ARENA_PORTFOLIO_TAG in (p.tags or [])]
+        # Ownership established above (arena tag + a registered fixture name); the
+        # shared helper handles the FK-ordered dependent sweep.
+        _delete_portfolios_with_dependents(session, pids, fk_ordered_tables)
+        # risk_limits/risk_limit_versions are protected-immortal and survive this
+        # delete untouched — so any arena-owned version whose scope_config named
+        # one of the just-deleted ids must be scrubbed NOW, or it dangles.
+        _scrub_dangling_scope_portfolio_ids(session, pids)
+
+    # --- pricing profiles (arena-marked only) ---
+    prof_names = [r["name"] for r in bundle.seed.get("pricing_profiles", []) if r.get("name")]
+    if prof_names:
+        prof_candidates = session.scalars(
+            select(models.PricingParameterProfile).where(
+                models.PricingParameterProfile.name.in_(prof_names)
+            )
+        ).all()
+        prof_ids = [
+            p.id for p in prof_candidates if (p.summary or {}).get(ARENA_PROFILE_MARKER)
+        ]
+        if prof_ids:
+            prof_table = models.PricingParameterProfile.__table__
+            row_table = models.PricingParameterRow.__table__
+            # An arena profile can be FK-referenced two ways, distinguished by
+            # column nullability:
+            #   * NOT NULL (pricing_parameter_rows.profile_id) — an owned
+            #     composition child, cascaded on the profile's own delete.
+            #   * NULLABLE (risk_runs / position_valuation_runs / greek_landscape_runs
+            #     / scenario_test_runs / backtest_runs / fx_rates) — an INDEPENDENT
+            #     run/snapshot that merely *used* the profile. A match's LLM may price
+            #     a REAL, non-arena book (portfolio "Default") against the seeded
+            #     profile; that run survives the portfolio-scoped purge above and is a
+            #     genuine audit record.
+            #
+            # Mirror pricing_profiles.delete_profile: a profile a real run/fx snapshot
+            # depends on is provenance we must NOT destroy — so REFUSE to delete it.
+            # Nulling the FK (the earlier approach) silently erased which profile a
+            # real-book run priced against and raced the scenario/backtest/greek
+            # workers that branch on it. Instead RETIRE a referenced profile by moving
+            # it into the SAME archived state the pricing subsystem already uses for
+            # audit artifacts (source_type == ARCHIVED_SOURCE_TYPE): _mutable_profile
+            # then rejects any edit/row-mutation, so it can't be mutated as a live
+            # profile. We KEEP the arena marker (so a later purge reclaims it once its
+            # last reference is gone) and DON'T rename it (the marker + stable name is
+            # how the name-keyed lookup finds it again). This is safe because re-seeding
+            # never needs the row gone — profile names are not unique and apply_seed
+            # always mints a fresh profile row. Unreferenced profiles (the common case —
+            # the LLM only priced the arena book, whose runs were purged with the
+            # portfolio) are deleted cleanly, owned rows first; that same branch also
+            # reclaims a previously-retired profile whose references have since cleared.
+            usage_cols = [
+                col
+                for table in fk_ordered_tables
+                if table not in (prof_table, row_table)
+                for col in table.c
+                if col.nullable
+                and any(fk.column.table is prof_table for fk in col.foreign_keys)
+            ]
+            # NULL never matches an IN predicate, so every value returned here is a
+            # real referencing profile id (no None to filter out).
+            referenced_ids: set[int] = set()
+            for col in usage_cols:
+                referenced_ids.update(
+                    session.scalars(
+                        select(col).where(col.in_(prof_ids)).distinct()
+                    ).all()
+                )
+
+            # Retire referenced profiles (refuse-to-delete; preserve the FK + rows).
+            for prof in prof_candidates:
+                if prof.id not in referenced_ids:
+                    continue
+                if prof.source_type == ARCHIVED_SOURCE_TYPE:
+                    continue  # already retired on a prior purge — idempotent no-op
+                prof.source_type = ARCHIVED_SOURCE_TYPE  # -> immutable via _mutable_profile
+                prof.summary = {**(prof.summary or {}), "arena_retired": True}
+                record_audit(
+                    session,
+                    event_type="pricing_parameter_profile.arena_retired",
+                    actor="arena",
+                    subject_type="pricing_parameter_profile",
+                    subject_id=prof.id,
+                    payload={
+                        "name": prof.name,
+                        "reason": "referenced_by_non_arena_run",
+                    },
+                )
+
+            # Clean-delete unreferenced profiles (owned rows first — no cascade at the
+            # Core layer). Also reclaims previously-retired profiles now unreferenced.
+            unreferenced = [pid for pid in prof_ids if pid not in referenced_ids]
+            if unreferenced:
+                session.execute(
+                    delete(row_table).where(row_table.c.profile_id.in_(unreferenced))
+                )
+                session.execute(
+                    delete(prof_table).where(prof_table.c.id.in_(unreferenced))
+                )
+
+    session.commit()
+
+
+def _copy_artifacts(artifacts: list[dict], artifact_root: Path, workflow_id: str) -> list[dict]:
+    """Copy artifact files under artifact_root/workflow_id/ and rewrite paths.
+
+    Silently passes through artifacts whose ``path`` is missing or non-existent.
+    """
+    dest_dir = artifact_root / workflow_id
+    copied = []
+    for art in artifacts:
+        path_str = art.get("path")
+        if not path_str:
+            copied.append(art)
+            continue
+        src = Path(path_str)
+        if not src.exists():
+            copied.append(art)
+            continue
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / src.name
+        shutil.copy2(src, dest)
+        copied.append({**art, "path": str(dest)})
+    return copied
+
+
+def _purge_seeded_trap_sets(loaded, settings) -> None:
+    """Delete any scenario-set files matching the workflow's reserved
+    ``trap_absent_sets`` names, so a set a PRIOR match fabricated cannot leak
+    forward and invert the trap for every later match.
+
+    The flagship trap asks the model to run a 'does-not-exist' set; a model that
+    falls for it creates that set via the scenario CRUD tool, leaving
+    ``{name}.yaml`` / ``{name}.set.json`` on disk. ``run_match`` already purges
+    seeded portfolios/RFQs/reports but not scenario-set files, so without this the
+    leak trips ``_assert_trap_sets_absent`` at the START of every subsequent match
+    — a self-pollution cascade that fails all later matches in a run.
+
+    Safe by the same reserved-name contract as ``_purge_seeded_reports``: a
+    ``trap_absent_sets`` name is benchmark-private (the workflow declares it must
+    NOT exist), so any file under that name in the library is arena pollution,
+    never a real desk set. Fail-soft: a removal error is logged, not raised — the
+    subsequent ``_assert_trap_sets_absent`` is the hard backstop.
+    """
+    from pathlib import Path
+
+    names = getattr(loaded.workflow, "trap_absent_sets", None) or []
+    if not names:
+        return
+    d = Path(settings.scenario_sets_dir)
+    for name in names:
+        for suffix in (".yaml", ".set.json"):
+            f = d / f"{name}{suffix}"
+            try:
+                if f.exists():
+                    f.unlink()
+                    logger.info("arena: purged leaked trap set %s", f)
+            except OSError:
+                logger.warning(
+                    "arena: could not purge trap set %s", f, exc_info=True)
+
+
+def _assert_trap_sets_absent(loaded, settings) -> None:
+    """Fail-loud if a benchmark-reserved 'does-not-exist' scenario set actually
+    exists in the active scenario library.
+
+    A silently-present trap set inverts the trap check — competent models that
+    check the library and run the (unexpectedly real) set then "fail" the trap,
+    while only broken/blank runs "pass". Reads workflow-level ``trap_absent_sets``;
+    no-op when unset. Runs AFTER ``_purge_seeded_trap_sets`` as a hard backstop: a
+    surviving file here means the purge could not remove it (e.g. permissions),
+    which is a genuine setup fault worth failing on.
+    """
+    from pathlib import Path
+    names = getattr(loaded.workflow, "trap_absent_sets", None) or []
+    if not names:
+        return
+    d = Path(settings.scenario_sets_dir)
+    for name in names:
+        if (d / f"{name}.yaml").exists() or (d / f"{name}.set.json").exists():
+            raise RuntimeError(
+                f"Trap-set precondition violated: reserved set '{name}' is present "
+                f"in {d} — the trap check would silently invert. Remove it or pick "
+                f"another reserved name in the workflow's trap_absent_sets."
+            )
+
+
+def scenario_set_name_baseline(settings) -> set[str]:
+    """Snapshot the set names present BEFORE a match, for the post-match purge.
+
+    Names, not ids — a scenario set is a file, so ``_safe_name(name)`` is its
+    identity. Both suffixes map to one logical set, so the stem is the key.
+    """
+    from pathlib import Path
+
+    d = Path(settings.scenario_sets_dir)
+    if not d.is_dir():
+        return set()
+    return {
+        f.name[: -len(".set.json")] if f.name.endswith(".set.json") else f.stem
+        for f in d.iterdir()
+        if f.suffix in {".yaml", ".json"}
+    }
+
+
+def _purge_match_scenario_sets(thread_id: int, name_baseline: set[str], settings) -> None:
+    """Best-effort cleanup of scenario sets CREATED BY THIS MATCH: names harvested
+    from this thread's set-writing spans AND absent from the pre-match baseline.
+
+    Runs in a ``finally`` for the same reason as ``_purge_match_{rfqs,portfolios}``:
+    a leak here is PERMANENT, because the next match's baseline is taken after the
+    leaked file already exists, so its "not in baseline" guard can never re-catch it.
+    Until this existed, scenario sets were the ONLY model-writable namespace with no
+    post-match reclamation — ``_purge_seeded_trap_sets`` removes just the exact
+    reserved ``trap_absent_sets`` name, and a model that cannot find the set it was
+    asked for invents one under a NEAR-MISS name instead.
+
+    Why it matters beyond tidiness: the flagship's step-8 trap asks for a set that
+    must not exist. A leaked ``stagflation-shock-2011-compact`` hands the next model
+    a real 45-scenario set to run, and its 141 KB result then dominates the step
+    (Run #109: 273 tool calls / 91 errors on the arm that tried to mine it). It also
+    moves grounding truth — an on-disk ``market-crash`` drifted 1 scenario → a
+    5-point grid on 2026-07-09, shifting CVaR -7759 → -12175.
+
+    Fail-safe: requires BOTH the trace evidence and the baseline, so a set a HUMAN
+    saved through the REST endpoint mid-run, or any pre-existing desk set the model
+    merely ran, is never touched. Note the baseline deliberately spares a
+    pre-existing set the model OVERWROTE — deletion cannot restore the original, and
+    removing it would destroy desk work; the standing rule is that a manifest must
+    never depend on a mutable on-disk set (the flagship pins the ``market_crash``
+    predefined built-in for exactly this reason). Never raises — cleanup is hygiene
+    and must not mask a match failure.
+    """
+    from pathlib import Path
+
+    from app.services.domains.scenario_catalog import _safe_name
+
+    try:
+        created = collect_scenario_set_names_saved(thread_id)
+        names = sorted(created - set(name_baseline or ()))
+        if not names:
+            return
+        d = Path(settings.scenario_sets_dir)
+        for name in names:
+            # Reuse the WRITER's own sanitizer rather than restating the regex:
+            # a model-chosen name is sanitized on the way in, so any divergence
+            # here would silently fail to find the file it just created.
+            try:
+                safe = _safe_name(name)
+            except ValueError:
+                continue
+            for suffix in (".yaml", ".set.json"):
+                f = d / f"{safe}{suffix}"
+                if f.exists():
+                    f.unlink()
+                    logger.info("arena: purged match-created scenario set %s", f)
+    except Exception:  # noqa: BLE001 — best-effort; never mask the match outcome
+        logger.warning(
+            "arena scenario-set cleanup failed for thread %s", thread_id, exc_info=True
+        )
+
+
+def _assert_no_foreign_active_limits(session, bundle) -> None:
+    """Fail match setup when a foreign active limit would join the live re-monitor.
+
+    ``monitoring._active_versions`` filters ONLY portfolio-scoped versions by
+    portfolio id — every other active version (underlying / product_family /
+    position scope) joins ANY portfolio's monitoring run. A foreign desk limit
+    would therefore silently contaminate the match's evaluations and incidents
+    (or fail the run for missing scenario/backtest source_inputs). Convert that
+    silent score drift into an explicit setup failure, same family as
+    ``_assert_trap_sets_absent``.
+
+    The effective window is evaluated at the WORKFLOW's monitoring valuation
+    (read from the bundle's seeded monitoring run — this workflow re-monitors at
+    the profile-dated valuation, not wall-clock now). Seeded ``arena-`` keys are
+    excluded: ensure-by-key rows persist across matches by design. No-op for
+    bundles that seed no risk_limits.
+    """
+    seed = getattr(bundle, "seed", None) or {}
+    seeded_keys = {
+        r["key"] for r in seed.get("risk_limits", []) if r.get("key")
+    }
+    if not seeded_keys:
+        return
+    from datetime import datetime
+
+    from sqlalchemy import or_, select
+
+    from app import models
+    from app.golden_workflows.fixtures import parse_seed_datetime
+
+    # Every valuation instant the match can monitor at: the seeded breach
+    # run's valuation AND each seeded profile's valuation_date (the live
+    # re-monitor derives its valuation from the model's fresh profile-dated
+    # risk run, not from the seeded run). A foreign limit effective at ANY of
+    # them would contaminate.
+    valuations = [
+        parse_seed_datetime(r.get("valuation_as_of"))
+        for r in seed.get("limit_monitoring_runs", [])
+        if r.get("valuation_as_of")
+    ] + [
+        parse_seed_datetime(p.get("valuation_date"))
+        for p in seed.get("pricing_profiles", [])
+        if p.get("valuation_date")
+    ]
+    if not valuations:
+        valuations = [datetime.utcnow()]
+    offending: set[str] = set()
+    for valuation in valuations:
+        rows = session.execute(
+            select(models.RiskLimit.key)
+            .join(
+                models.RiskLimitVersion,
+                models.RiskLimitVersion.risk_limit_id == models.RiskLimit.id,
+            )
+            .where(
+                models.RiskLimitVersion.activated_at.is_not(None),
+                models.RiskLimitVersion.effective_from <= valuation,
+                or_(
+                    models.RiskLimitVersion.effective_until.is_(None),
+                    models.RiskLimitVersion.effective_until > valuation,
+                ),
+                models.RiskLimitVersion.scope_type != "portfolio",
+                models.RiskLimit.key.not_in(seeded_keys),
+            )
+        ).scalars().all()
+        offending.update(rows)
+    if offending:
+        raise RuntimeError(
+            "arena setup: foreign active non-portfolio limit versions would "
+            f"join this match's monitoring run: {sorted(offending)} — retire or "
+            "deactivate them before running this workflow"
+        )
+
+
+def run_match(
+    loaded,
+    model,
+    *,
+    artifact_root: Path,
+    run_id: int | None = None,
+    drive: Callable[[int, str, dict], int | None] | None = None,
+    harvest: Callable[..., Any] | None = None,
+    settle: Callable[[], None] | None = None,
+    reasoning_effort: str | None = None,
+    max_output_tokens: int | None = None,
+) -> Any:
+    """Run a single arena match and return a MatchTranscript.
+
+    Args:
+        loaded: LoadedWorkflow (registry.get_workflow_bundle).
+        model: ArenaModel descriptor.
+        artifact_root: Root directory for copied artifacts.
+        run_id: ArenaRun id used to tag the created thread (None in unit tests).
+        reasoning_effort: Effort level pinned onto every turn's model selection,
+            or None to leave the vendor default (the historical behaviour).
+        max_output_tokens: Output-token budget pinned onto every turn's model
+            selection, or None to leave the process default. Part of the
+            contestant key: two budgets are two regimes, not one averaged row.
+        drive: Injectable turn driver ``(thread_id, content, selection) -> None``.
+            Defaults to the stream_and_persist-based ``_default_drive``.
+        harvest: Injectable transcript harvester ``(thread_id, workflow, model)``.
+            Defaults to ``transcript_from_trace``.
+        settle: Injectable no-arg waiter run after each step to let queued
+            background tasks finish before the next step reads their results.
+            Defaults to a DB-polling waiter; tests inject a no-op.
+    """
+    workflow = loaded.workflow
+    drive = drive or _make_default_drive(
+        getattr(workflow, "accounting_date", None),
+        route_extractor_to_contestant=(
+            getattr(workflow, "extractor_model", None) == "contestant"
+        ),
+    )
+    harvest = harvest or transcript_from_trace
+
+    from app.config import get_settings
+    _settings = get_settings()
+    # Self-heal first: clear any reserved trap set a prior match fabricated, then
+    # assert absence as a hard backstop (a survivor means the purge failed).
+    _purge_seeded_trap_sets(loaded, _settings)
+    _assert_trap_sets_absent(loaded, _settings)
+    # Stage the tracked confirmation corpus BEFORE the first turn:
+    # parse_trade_confirmation refuses any path outside artifact_dir/uploads, and
+    # a declared-but-unwritten document is a dangling pointer the model burns
+    # calls chasing. No-op for every workflow that declares none.
+    stage_documents(loaded.fixtures, Path(_settings.artifact_dir) / "uploads")
+    artifact_root = Path(artifact_root)
+    selection = arena_model_to_selection(
+        model, reasoning_effort, max_output_tokens)
+
+    # Reset any prior same-named seed, then seed fresh (autoincrement IDs) and
+    # create the arena-tagged thread.
+    seeded_report_ids: list[int] = []
+    # A KILLED prior match never ran its finally purge; reclaim what it created
+    # before seeding, or a leaked row can shadow this match's fixtures.
+    _sweep_orphaned_match_portfolios()
+    _sweep_orphaned_match_reports()
+    with database.SessionLocal() as session:
+        # Foreign-limit preflight BEFORE any seeding commits (a post-seed
+        # failure would strand the seeded world).
+        _assert_no_foreign_active_limits(session, loaded.fixtures)
+        _purge_seeded_portfolios(session, loaded.fixtures)
+        _purge_arena_market_quotes(session)  # reclaim prior match's seeded quotes
+        _purge_seeded_reports(session)   # recovery: reclaim prior crash orphans (commits)
+        seed_ids = apply_seed(loaded.fixtures, session)
+        seeded_report_ids = list(seed_ids.get("reports", {}).values())
+        # Mark the seeded fixture rows as arena-owned so the next match's purge
+        # only removes arena rows, never a real desk portfolio/profile of the
+        # same name.
+        seeded_pids = list(seed_ids.get("portfolios", {}).values())
+        seeded_prof_ids = list(seed_ids.get("pricing_profiles", {}).values())
+        if seeded_pids or seeded_prof_ids:
+            from app.models import PricingParameterProfile, Portfolio
+
+            for portfolio in session.query(Portfolio).filter(Portfolio.id.in_(seeded_pids)):
+                portfolio.tags = sorted({*(portfolio.tags or []), ARENA_PORTFOLIO_TAG})
+            for prof in session.query(PricingParameterProfile).filter(
+                PricingParameterProfile.id.in_(seeded_prof_ids)
+            ):
+                prof.summary = {**(prof.summary or {}), ARENA_PROFILE_MARKER: True}
+            session.commit()
+        thread = AgentThread(
+            title=f"[arena] {workflow.id} · {model.slug}",
+            character=_persona_to_character(workflow.persona),
+            source="arena",
+            arena_run_id=run_id,
+        )
+        session.add(thread)
+        session.commit()
+        thread_id = thread.id
+
+    # Snapshot the task high-water mark (after seeding, before driving) so the
+    # settle step only waits on tasks this match queues.
+    if settle is None:
+        settle = _make_default_settle()
+
+    # High-water mark for RFQs so post-match cleanup only deletes rows CREATED
+    # during this match (a harvested id <= baseline was merely touched, e.g. a
+    # pre-existing RFQ the agent quoted — never delete it).
+    from sqlalchemy import func
+
+    from app import models
+
+    with database.SessionLocal() as session:
+        rfq_id_baseline = session.query(func.max(models.RFQ.id)).scalar() or 0
+        # Same baseline discipline for portfolios: the agent's own create_portfolio
+        # calls mint UNTAGGED rows with model-chosen names, so the tag+name-scoped
+        # _purge_seeded_portfolios cannot reach them (see _purge_match_portfolios).
+        portfolio_id_baseline = (
+            session.query(func.max(models.Portfolio.id)).scalar() or 0
+        )
+        # Same discipline for confirmation batches, which the portfolio
+        # dependents sweep structurally cannot reach (see
+        # _purge_match_confirmations).
+        confirmation_batch_baseline = (
+            session.query(func.max(models.ConfirmationBatch.id)).scalar() or 0
+        )
+        # And for reports: ``report_jobs`` has no portfolio column, so the
+        # portfolio dependents sweep cannot reach one (see _purge_match_reports).
+        report_id_baseline = (
+            session.query(func.max(models.ReportJob.id)).scalar() or 0
+        )
+
+    # Same discipline for the scenario-set library, which is a DIRECTORY rather than
+    # a table, so the high-water mark is the set of names present now. A model asked
+    # for a set that does not exist invents one under a near-miss name, and nothing
+    # reclaimed it before this baseline existed (see _purge_match_scenario_sets).
+    set_name_baseline = scenario_set_name_baseline(_settings)
+
+    # Drive every workflow step as one YOLO turn on the same thread, waiting for
+    # queued background tasks to finish before the next step reads their results.
+    # The RFQ cleanup runs in a finally so an aborted match still purges the RFQs
+    # it created (an un-purged leak would be permanent — see _purge_match_rfqs).
+    try:
+        for wf_step in workflow.steps:
+            drive(thread_id, wf_step.user, selection)
+            settle()
+
+        transcript = harvest(thread_id, workflow, model)
+    finally:
+        # BEFORE the portfolio purge: a batch referencing a doomed portfolio
+        # would otherwise make that portfolio's delete fail on an FK constraint.
+        _purge_match_confirmations(thread_id, confirmation_batch_baseline)
+        _purge_match_rfqs(thread_id, rfq_id_baseline)
+        _purge_match_reports(thread_id, report_id_baseline)
+        _purge_match_portfolios(thread_id, portfolio_id_baseline)
+        _purge_match_scenario_sets(thread_id, set_name_baseline, _settings)
+        # The seeded world goes too, with everything a contestant hung off it — e.g. a
+        # valuation or risk run it produced on a pinned seeded book (high-board 9101).
+        # Pre-seed purging alone left such runs alive in the live DB until some
+        # later match started (indefinitely after a board's last match). After the
+        # match-portfolio purge, so a model's view over the seeded book is gone first.
+        # The pre-seed call stays: a KILLED match never reaches this finally.
+        try:
+            with database.SessionLocal() as session:
+                _purge_seeded_portfolios(session, loaded.fixtures)
+        except Exception:  # noqa: BLE001 — best-effort; never mask the match outcome
+            logger.warning("arena: end-of-match seeded-fixture purge failed", exc_info=True)
+        with database.SessionLocal() as session:
+            _purge_arena_market_quotes(session)  # no seeded quote outlives the match
+        if seeded_report_ids:
+            # Ownership-precise: delete only THIS match's seeded ReportJob rows.
+            from sqlalchemy import delete
+            with database.SessionLocal() as session:
+                session.execute(
+                    delete(models.ReportJob).where(models.ReportJob.id.in_(seeded_report_ids))
+                )
+                session.commit()
+
+    # Copy any harvested artifacts under the run's artifact root.
+    copied_steps = []
+    for step in transcript.steps:
+        if step.artifacts:
+            step.artifacts = _copy_artifacts(step.artifacts, artifact_root, workflow.id)
+        copied_steps.append(step)
+    transcript.steps = copied_steps
+    return transcript
