@@ -1,0 +1,184 @@
+"""Read-only term-completeness check against FamilyContracts.
+
+The desk rule "numbers never come from an LLM" extended to term verdicts:
+whether a term set is complete enough to price is answered by diffing the
+provided terms against the family contract's required_bound — never from
+model priors (which confabulate plausible-but-wrong structures, e.g. a
+knock-in leg on a sharkfin)."""
+from __future__ import annotations
+
+from typing import Any
+from app.services.domains.product_validation import Representation, check_native_terms, check_valuation_market
+
+from langchain_core.tools import tool
+from pydantic import BaseModel, Field
+
+from app.services.deep_agent.capability_gate import capability_gated
+from app.services.deep_agent.envelopes import ToolGroup
+from app.services.domains.product_contracts import (
+    _CONTRACTS,
+    active_required_paths,
+    contract_for,
+    flat_aliases,
+    one_of_groups,
+)
+
+
+class CheckTermCompletenessInput(BaseModel):
+    representation: Representation = Field(default="raw_build_inputs", description="raw_build_inputs for collected builder inputs; native_product_terms for build_product.product_kwargs, RFQ product.terms or stored native terms; valuation_market for explicit spot/r/q/vol/date.")
+    quantark_class: str = Field(
+        description="QuantArk family class, e.g. SingleSharkfinOption, SnowballOption."
+    )
+    terms: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Terms collected so far. Keys may be flat contract paths "
+            "('barrier_config.ko_barrier') or nested dicts "
+            "({'barrier_config': {'ko_barrier': 1.0}})."
+        ),
+    )
+
+
+def _lookup(terms: dict[str, Any], dotted: str) -> Any:
+    if dotted in terms:
+        return terms[dotted]
+    node: Any = terms
+    for part in dotted.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def _is_provided(value: Any) -> bool:
+    return value is not None and value != ""
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@capability_gated(group=ToolGroup.DOMAIN_READ)
+@tool("check_term_completeness", args_schema=CheckTermCompletenessInput)
+def check_term_completeness(quantark_class: str, terms: dict[str, Any] | None = None,
+                            representation: Representation = "raw_build_inputs") -> dict:
+    """Check completeness for the explicitly chosen representation:
+    raw_build_inputs, native_product_terms, or valuation_market. A raw-input
+    verdict must not be applied to native constructor output.
+    ALWAYS call this before stating that a term set is complete or listing
+    missing terms — never answer completeness from memory."""
+    if representation == "valuation_market":
+        return {"quantark_class": quantark_class, **check_valuation_market(terms or {})}
+    if representation == "native_product_terms":
+        return check_native_terms(quantark_class, terms or {})
+    if representation != "raw_build_inputs":
+        raise ValueError("Unknown validation representation")
+    contract = contract_for(quantark_class)
+    if contract is None:
+        return {
+            "error": f"Unknown QuantArk class {quantark_class!r}",
+            "known_classes": sorted(_CONTRACTS),
+        }
+    terms = terms or {}
+    aliases = flat_aliases(contract)
+    path_to_spec = {(s.contract_path or s.input_name): s for s in contract.fields}
+
+    def _canonical_floats(path: str) -> list[float]:
+        """Numeric values at a canonical path via BOTH a literal dotted key and a nested-dict
+        walk (collected separately, so a literal-dotted value disagreeing with a nested-dict
+        value of the same path is caught)."""
+        vals: list[float] = []
+        if path in terms:
+            v = _to_float(terms[path])
+            if v is not None:
+                vals.append(v)
+        node: Any = terms
+        for part in path.split("."):
+            if not isinstance(node, dict) or part not in node:
+                node = None
+                break
+            node = node[part]
+        if node is not None:
+            v = _to_float(node)
+            if v is not None:
+                vals.append(v)
+        return vals
+
+    def _provided_path(path: str) -> bool:
+        """Satisfied the way the SYNTHESIZE builder reads the field: flat input aliases for
+        every field, plus the nested/dotted path only for barrier alias-sets (len>1). A
+        list-shaped field (CUSTOM ko_observation_dates) needs a non-empty list, not a scalar."""
+        al = aliases.get(path, (path,))
+        spec = path_to_spec.get(path)
+        if spec is not None and spec.kind == "date_list":
+            val = next((_lookup(terms, a) for a in al if _is_provided(_lookup(terms, a))), None)
+            return isinstance(val, (list, tuple)) and len(val) > 0
+        if any(_is_provided(_lookup(terms, a)) for a in al):
+            return True
+        return len(al) > 1 and _is_provided(_lookup(terms, path))
+
+    # active_required_paths encodes the conditional requires_when rules (ko_observation_dates,
+    # ki_barrier) AND this family's one_of alternatives, so the completeness verdict and the
+    # schema tool stay in agreement.
+    active = active_required_paths(contract, terms)
+    missing = [key for key in active if not _provided_path(key)]
+    provided = [key for key in active if key not in missing]
+    defaulted_unset = [
+        key for key in contract.defaulted if not _is_provided(_lookup(terms, key))
+    ]
+    # Mutually-exclusive one_of groups (e.g. maturity_years|maturity_date): supplying more
+    # than one member is a conflict the builder rejects.
+    conflicts = [
+        {"one_of": group, "provided": [m for m in members if _is_provided(_lookup(terms, m))]}
+        for group, members in one_of_groups(contract).items()
+        if sum(1 for m in members if _is_provided(_lookup(terms, m))) > 1
+    ]
+    # Date-first scalar contracts intentionally do not advertise maturity aliases.
+    # Flag them rather than letting a legacy key appear complete or be silently ignored.
+    field_names = {spec.input_name for spec in contract.fields}
+    if "exercise_date" in field_names and "maturity_years" not in field_names:
+        legacy_lifecycle = [
+            key
+            for key in ("maturity", "maturity_years", "maturity_date", "expiry_date", "expiry")
+            if _is_provided(_lookup(terms, key))
+        ]
+        if legacy_lifecycle:
+            conflicts.append({
+                "code": "lifecycle_mixed_expiry",
+                "provided": legacy_lifecycle,
+            })
+    # Representation-complete barrier ambiguity: the distinct ways to express ONE barrier are
+    # {the canonical dotted/nested path (both literal-dotted and nested-dict)} ∪ {flat abs/pct
+    # aliases}. Flag a conflict only when they resolve to DIFFERENT levels (the same value in
+    # two spellings is redundant); `_pct` resolves against initial_price, mirroring the builder.
+    init = _to_float(_lookup(terms, "initial_price"))
+    for path, al in aliases.items():
+        if len(al) <= 1:
+            continue
+        reps: list[tuple[str, float]] = [(path, v) for v in _canonical_floats(path)]
+        for a in al:
+            v = _to_float(_lookup(terms, a))
+            if v is None:
+                continue
+            reps.append((a, round(init * v / 100.0, 6) if a.endswith("_pct") and init else v))
+        if len({round(v, 6) for _, v in reps}) > 1:
+            conflicts.append({"alias_conflict": path, "provided": [name for name, _ in reps]})
+    return {
+        "quantark_class": quantark_class,
+        "representation": "raw_build_inputs",
+        "complete": not missing and not conflicts,
+        "missing_required": missing,
+        "provided_required": provided,
+        "defaulted_unset": defaulted_unset,
+        "conflicts": conflicts,
+        "note": (
+            "Raw synthesis inputs only: collect missing_required before build_product, "
+            "not by inserting them into native kwargs. Check built/stored product terms "
+            "with representation=native_product_terms and market separately; "
+            "conflicts list mutually-exclusive fields supplied together (supply one); "
+            "defaulted_unset fields fall back to desk defaults (configurable)."
+        ),
+    }
