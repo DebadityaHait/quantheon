@@ -1,0 +1,897 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OTC Desk Agent Arena — Run</title>
+<style>
+:root{
+  --ink:#1a1d21; --muted:#5b6470; --line:#e3e6eb; --bg:#ffffff;
+  --accent:#2f5d8a; --soft:#f4f6f9;
+  --gold:#caa12e; --silver:#9aa0a6; --bronze:#b06a3b; --mid:#3b6fb0; --floor:#c5c9d1;
+  --good:#2e8b57; --neutral:#6b7280; --warn:#d98a2b; --bad:#c0392b; --frontier:#3b6fb0;
+}
+*{box-sizing:border-box}
+html{-webkit-print-color-adjust:exact; print-color-adjust:exact}
+body{
+  font-family:"Charter","Georgia",Cambria,"Times New Roman",serif;
+  color:var(--ink); background:var(--bg); line-height:1.62;
+  max-width:820px; margin:0 auto; padding:56px 40px 80px; font-size:16.5px;
+}
+h1,h2,h3,h4{font-family:-apple-system,"Inter","Segoe UI",Helvetica,Arial,sans-serif;
+  line-height:1.22; letter-spacing:-.01em; color:var(--ink)}
+h1{font-size:2.05rem; margin:.2em 0 .1em; font-weight:800}
+h2{font-size:1.42rem; margin:2.1em 0 .55em; padding-bottom:.28em;
+  border-bottom:2px solid var(--line); font-weight:750}
+h3{font-size:1.12rem; margin:1.7em 0 .5em; font-weight:700; color:#2b3038}
+h1+p em, body>p:first-of-type em{color:var(--muted)}
+p,li{font-size:1rem}
+a{color:var(--accent); text-decoration:none}
+hr{border:none; border-top:1px solid var(--line); margin:2.2em 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:.86em;
+  background:var(--soft); padding:.1em .35em; border-radius:4px}
+blockquote{margin:1.1em 0; padding:.7em 1.1em; background:var(--soft);
+  border-left:4px solid var(--accent); border-radius:0 6px 6px 0; color:#2b3038}
+blockquote p{margin:.3em 0}
+strong{font-weight:700}
+
+/* tables */
+table{border-collapse:collapse; width:100%; margin:1.1em 0; font-size:.9rem;
+  font-family:-apple-system,"Inter","Segoe UI",sans-serif}
+th,td{padding:.5em .7em; border-bottom:1px solid var(--line); text-align:left}
+thead th{background:#f7f9fc; border-bottom:2px solid #d6dbe3; font-weight:700;
+  font-size:.82rem; letter-spacing:.01em; color:#39414c}
+tbody tr:nth-child(even){background:#fbfcfe}
+td:first-child,th:first-child{white-space:nowrap}
+
+/* charts */
+.chart{margin:1.3em 0 1.6em; padding:0}
+.chart .row{display:flex; align-items:center; gap:12px; margin:5px 0;
+  font-family:-apple-system,"Inter","Segoe UI",sans-serif}
+.chart .lbl{flex:0 0 168px; text-align:right; font-size:.82rem; color:#39414c; font-weight:600}
+.chart .track{flex:1; height:22px; background:#eef1f5; border-radius:5px; overflow:hidden}
+.chart .bar{display:block; height:100%; border-radius:5px}
+.chart .val{flex:0 0 150px; font-size:.78rem; color:var(--muted); font-variant-numeric:tabular-nums}
+.chart figcaption{margin-top:.7em; font-size:.76rem; color:var(--muted);
+  font-family:-apple-system,"Inter",sans-serif; text-align:right}
+.bar.gold{background:linear-gradient(90deg,#d9b13f,#caa12e)}
+.bar.silver{background:linear-gradient(90deg,#aab0b6,#9aa0a6)}
+.bar.bronze{background:linear-gradient(90deg,#c07c4a,#b06a3b)}
+.bar.mid{background:linear-gradient(90deg,#4d80bf,#3b6fb0)}
+.bar.frontier{background:linear-gradient(90deg,#4d80bf,#3b6fb0)}
+.bar.floor{background:#c5c9d1}
+.bar.good{background:linear-gradient(90deg,#37a169,#2e8b57)}
+.bar.neutral{background:#8a929e}
+.bar.warn{background:linear-gradient(90deg,#e09a3e,#d98a2b)}
+.bar.bad{background:linear-gradient(90deg,#d04b3c,#c0392b)}
+
+/* report header band */
+.masthead{border-bottom:3px solid var(--ink); padding-bottom:.6em; margin-bottom:1.4em}
+.footer-note{margin-top:3em; padding-top:1em; border-top:1px solid var(--line);
+  font-size:.8rem; color:var(--muted); font-family:-apple-system,"Inter",sans-serif}
+
+@page{size:A4; margin:16mm 15mm}
+@media print{
+  body{max-width:none; margin:0; padding:0; font-size:10.6pt}
+  h2{margin-top:1.4em}
+  h2,h3,h4{break-after:avoid}
+  table,.chart,blockquote,figure{break-inside:avoid}
+  tr{break-inside:avoid}
+  a{color:var(--ink)}
+}
+</style>
+</head><body>
+<h1>🏆 OTC Desk Agent Arena — Claude Haiku 5.5 joins the flash tier</h1>
+<p><strong>Claude Haiku 5.5 takes the top consolidated card among four flash models, by 1.2
+points over mimo-v2.6-flash. That is a tie: one workflow was run twice for every model, and
+on the first pair of trials Haiku is second, 0.1 behind. Haiku has the best efficiency and
+the lowest objective score, and it costs more than luna and mimo and about the same as
+deepseek.</strong></p>
+<p><em>2026-10-09 · regrouped from runs <code>#143</code>, <code>#146</code>, <code>#147</code>, <code>#149</code> and <code>#150</code> (and <code>#148</code>, shown beside them) · 4 models × 6 workflows ×
+2 trials · every contestant pinned to <code>high</code> reasoning effort · output budget unpinned ·
+objective-only scoring (jury off) · </em><em>48 of 48 trials scored, zero invalid</em><em> · cost is
+the gateway's per-call </em><em>bill</em><em> for the trio and for Haiku's risk-manager-control cell,
+and a rate-verified estimate for Haiku's other five</em></p>
+<hr />
+<h2>The field</h2>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Lab</th>
+<th>Route</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>claude-haiku-5.5</strong></td>
+<td>Anthropic</td>
+<td><code>anthropic/claude-haiku-5.5</code>, pinned to Anthropic's own upstream, Anthropic wire format</td>
+</tr>
+<tr>
+<td><strong>gpt-6-luna</strong></td>
+<td>OpenAI</td>
+<td><code>openai/gpt-6-luna</code></td>
+</tr>
+<tr>
+<td><strong>mimo-v2.6-flash</strong></td>
+<td>Xiaomi</td>
+<td><code>xiaomi/mimo-v2.6-flash</code></td>
+</tr>
+<tr>
+<td><strong>deepseek-v4.1-flash</strong></td>
+<td>DeepSeek</td>
+<td><code>deepseek/deepseek-v4.1-flash</code>, pinned to DeepSeek's own upstream</td>
+</tr>
+</tbody>
+</table>
+<p>The three non-Anthropic models are the <a href="2026-09-27-run143-flash-trio.md">Runs #143 / #144 flash trio</a>.
+Haiku 5.5 was onboarded on 2026-10-08. Two things were checked before it ran, not assumed.
+It can read an image-only scan: three of three reads of the scanned confirmation returned
+the underlying, the strike and the full reference number correctly, and the confirmation
+workflow refuses to launch for a model that does not declare it. And the gateway accepts all
+seven reasoning-effort levels for it but reports no reasoning tokens, so "accepted" does
+not prove the levels differ. This board therefore covers one level, <code>high</code>, for every
+contestant.</p>
+<hr />
+<h2>How this board was assembled</h2>
+<p>This is a <strong>regroup</strong>, not a merge. Each cell below is read from one declared run, and
+every other run is ignored for that cell.</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Cells</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>#143</code></td>
+<td>the trio, on four workflows</td>
+<td>the published trio rows</td>
+</tr>
+<tr>
+<td><code>#146</code></td>
+<td>Haiku, on the same four</td>
+<td>Haiku's own six-workflow run</td>
+</tr>
+<tr>
+<td><code>#147</code></td>
+<td><strong>all four models</strong>, on high-board and trader-rfq</td>
+<td>both were repaired on 2026-10-08, so everyone was re-run together</td>
+</tr>
+<tr>
+<td><code>#148</code></td>
+<td><strong>all four models</strong>, on risk-manager-control</td>
+<td>the first pair of trials on the repaired workflow (below); <strong>not used in any cell</strong>, shown beside the second pair</td>
+</tr>
+<tr>
+<td><code>#149</code></td>
+<td>Haiku, on risk-manager-control</td>
+<td>the second pair of trials, on the same manifest; Haiku's cell</td>
+</tr>
+<tr>
+<td><code>#150</code></td>
+<td>the trio, on risk-manager-control</td>
+<td>the second pair of trials, on the same manifest; the trio's cells</td>
+</tr>
+</tbody>
+</table>
+<p>The three workflows that stay on the earlier runs are risk-limit-breach, ops-settlement and
+confirmation-desk.</p>
+<p>Haiku's #146 rows for high-board (81.4) and trader-rfq (68.5) are <strong>not used</strong>: they ran on
+the pre-repair manifests. The trio's #143/#144 rows for those two workflows are likewise
+superseded.</p>
+<p>The three reused workflows are scoring-identical to when the trio ran them.</p>
+<ul>
+<li><strong>risk-limit-breach, ops-settlement, confirmation-desk</strong>: the only manifest change since
+  #143 is an advisory <code>trap: true</code> label on one step each, which no score reads. The
+  manifest version rose (v1→v2, v3→v4) and so did the hash; the checks did not change.</li>
+<li><strong>risk-manager-control</strong> is not reused. Its stored "stale" risk run pinned position ids
+  1–3, which on the live DB are not the control book's positions, so the trio (on v1) and
+  Haiku (on v2, the label only) had both run on the same defective fixture. v3 seeds the
+  real ids. All four models were re-run on it together (#148), and the earlier
+  risk-manager-control rows (Haiku 92.3, luna 97.4, mimo 93.6, deepseek 97.4) are <strong>not
+  used</strong>.</li>
+<li><strong>risk-manager-control was run twice for every model, and the board uses the second pair.</strong>
+  Haiku's first pair (#148) scored 89.7 and 79.5 (84.6). At the maintainer's request Haiku
+  was re-run alone (#149: 92.3 and 94.9, 93.6) and the re-run replaced those two trials.
+  Replacing only Haiku's would have given it a second chance the others did not get, so
+  the trio were re-run too (#150) and their first pairs (#148) are replaced the same way.
+  All three runs are on the same manifest (v3, hash <code>301e00e0</code>). Both pairs are shown
+  below, and the headline is given both ways.</li>
+</ul>
+<p>Different app builds were in play: #143 ran on <code>ccfdb292f</code> (some of its rows were re-run on
+later builds before publication), #146 on <code>f30fe37e3</code>, #147 on <code>843a7b4c7</code>, #148 on <code>bbf84616d</code>, #149 on <code>6a306a894</code> and #150 on <code>fadd3aa98</code> (the last two are main at a docs-only distance from #148). A compaction defect that dropped part of the history after a summary was
+fixed between #143 and #146. The only #143 match that compacted at all was a row that was
+since superseded, so the reused <code>high</code> rows are not affected by it. #148 also ran with the generation-id
+fix, and so did #149 and #150, so every one of their calls, Haiku's included, can be billed individually.</p>
+<hr />
+<h2>Headline</h2>
+<p>Consolidated card: the mean of each model's six workflow cards.</p>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th style="text-align: center;">OVR</th>
+<th style="text-align: center;">GRD</th>
+<th style="text-align: center;">ADH</th>
+<th style="text-align: center;">SYN</th>
+<th style="text-align: center;">PRC</th>
+<th style="text-align: center;">EFF</th>
+<th style="text-align: center;">CON</th>
+<th style="text-align: center;">Objective</th>
+<th style="text-align: center;">Tool calls / match</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>claude-haiku-5.5</strong></td>
+<td style="text-align: center;"><strong>87.5</strong></td>
+<td style="text-align: center;">94</td>
+<td style="text-align: center;">96</td>
+<td style="text-align: center;">99</td>
+<td style="text-align: center;">93</td>
+<td style="text-align: center;">59</td>
+<td style="text-align: center;">86</td>
+<td style="text-align: center;">94.8</td>
+<td style="text-align: center;">34</td>
+</tr>
+<tr>
+<td><strong>mimo-v2.6-flash</strong></td>
+<td style="text-align: center;"><strong>86.3</strong></td>
+<td style="text-align: center;">94</td>
+<td style="text-align: center;">95</td>
+<td style="text-align: center;">99</td>
+<td style="text-align: center;">96</td>
+<td style="text-align: center;">49</td>
+<td style="text-align: center;">88</td>
+<td style="text-align: center;">95.9</td>
+<td style="text-align: center;">57</td>
+</tr>
+<tr>
+<td><strong>gpt-6-luna</strong></td>
+<td style="text-align: center;"><strong>84.3</strong></td>
+<td style="text-align: center;">93</td>
+<td style="text-align: center;">95</td>
+<td style="text-align: center;">94</td>
+<td style="text-align: center;">96</td>
+<td style="text-align: center;">45</td>
+<td style="text-align: center;">86</td>
+<td style="text-align: center;">95.7</td>
+<td style="text-align: center;">40</td>
+</tr>
+<tr>
+<td><strong>deepseek-v4.1-flash</strong></td>
+<td style="text-align: center;"><strong>81.5</strong></td>
+<td style="text-align: center;">96</td>
+<td style="text-align: center;">96</td>
+<td style="text-align: center;">97</td>
+<td style="text-align: center;">95</td>
+<td style="text-align: center;">14</td>
+<td style="text-align: center;">88</td>
+<td style="text-align: center;">96.5</td>
+<td style="text-align: center;">76</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>The top two are close.</strong> Haiku's 87.5 leads mimo's 86.3 by 1.2, inside two-trial
+  noise, and luna (84.3) is not far behind. Haiku has the best efficiency (59, against 49
+  for mimo and 45 for luna), and mimo is ahead on precision (96 against 93),
+  consistency (88 against 86) and objective score. On the first pair of risk-manager-control trials the order of these two is
+  reversed (table below).</li>
+<li><strong>deepseek-v4.1-flash is last on the card and first on the work.</strong> It has the best
+  objective score (96.3) and grounding, and an efficiency of 13: 74 tool calls a match,
+  more than twice Haiku's 34. As on the earlier board, that gap is all of its distance from the top.</li>
+<li><strong>Haiku has the lowest objective score of the four (94.8)</strong>, 1.1 below mimo and 1.7
+  below deepseek. Its card is up there because it gets to the answer in fewer calls.</li>
+</ul>
+<p>risk-manager-control was run twice for every model. The headline above uses the second
+pair for all four; the first pair gives a different top two.</p>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th style="text-align: center;">OVR, second pair (#149 / #150)</th>
+<th style="text-align: center;">OVR, first pair (#148)</th>
+<th style="text-align: center;">OVR, without the workflow</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>claude-haiku-5.5</td>
+<td style="text-align: center;"><strong>87.5</strong></td>
+<td style="text-align: center;">86.2</td>
+<td style="text-align: center;">88.2</td>
+</tr>
+<tr>
+<td>mimo-v2.6-flash</td>
+<td style="text-align: center;">86.3</td>
+<td style="text-align: center;">86.3</td>
+<td style="text-align: center;">87.0</td>
+</tr>
+<tr>
+<td>gpt-6-luna</td>
+<td style="text-align: center;">84.3</td>
+<td style="text-align: center;">84.3</td>
+<td style="text-align: center;">85.2</td>
+</tr>
+<tr>
+<td>deepseek-v4.1-flash</td>
+<td style="text-align: center;">81.5</td>
+<td style="text-align: center;">81.0</td>
+<td style="text-align: center;">81.2</td>
+</tr>
+</tbody>
+</table>
+<p>Before the fix Haiku led by 0.3 (86.0 against 85.7). Haiku is first by 1.2 on the second
+pair and second by 0.1 on the first, and leads on the five workflows that did not move
+(88.2). So the honest reading is a tie between Haiku and mimo; the second pair is used for
+the headline because every model has one, and the first pair is shown for the same reason.</p>
+<hr />
+<h2>Workflow by workflow</h2>
+<p>Objective score, with the two trials in brackets, then CON.</p>
+<table>
+<thead>
+<tr>
+<th>Workflow</th>
+<th>source</th>
+<th style="text-align: center;">claude-haiku-5.5</th>
+<th style="text-align: center;">gpt-6-luna</th>
+<th style="text-align: center;">mimo-v2.6-flash</th>
+<th style="text-align: center;">deepseek-v4.1-flash</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>risk-limit-breach</td>
+<td>#143 + #146</td>
+<td style="text-align: center;">97.3 (94.7 / 100) · 92</td>
+<td style="text-align: center;">97.4 (97.4 / 97.4) · 86</td>
+<td style="text-align: center;"><strong>100.0</strong> (100 / 100) · 99</td>
+<td style="text-align: center;"><strong>100.0</strong> (100 / 100) · 99</td>
+</tr>
+<tr>
+<td>ops-settlement</td>
+<td>#143 + #146</td>
+<td style="text-align: center;">94.3 (97.7 / 90.9) · 79</td>
+<td style="text-align: center;"><strong>95.5</strong> (90.9 / 100) · 73</td>
+<td style="text-align: center;">88.6 (88.6 / 88.6) · 82</td>
+<td style="text-align: center;">90.9 (88.6 / 93.2) · 86</td>
+</tr>
+<tr>
+<td>risk-manager-control</td>
+<td>#149 + #150</td>
+<td style="text-align: center;">93.6 (92.3 / 94.9) · 79</td>
+<td style="text-align: center;">97.4 (97.4 / 97.4) · 99</td>
+<td style="text-align: center;"><strong>100.0</strong> (100 / 100) · 82</td>
+<td style="text-align: center;">97.4 (97.4 / 97.4) · 92</td>
+</tr>
+<tr>
+<td>high-board</td>
+<td>#147</td>
+<td style="text-align: center;">95.7 (100 / 91.4) · 73</td>
+<td style="text-align: center;">92.8 (100 / 85.7) · 59</td>
+<td style="text-align: center;"><strong>97.1</strong> (97.1 / 97.1) · 92</td>
+<td style="text-align: center;"><strong>97.1</strong> (97.1 / 97.1) · 96</td>
+</tr>
+<tr>
+<td>trader-rfq</td>
+<td>#147</td>
+<td style="text-align: center;">91.1 (90.3 / 91.9) · 96</td>
+<td style="text-align: center;">94.3 (93.5 / 95.2) · 99</td>
+<td style="text-align: center;">92.8 (88.7 / 96.8) · 79</td>
+<td style="text-align: center;"><strong>95.2</strong> (93.5 / 96.8) · 69</td>
+</tr>
+<tr>
+<td>confirmation-desk</td>
+<td>#143 + #146</td>
+<td style="text-align: center;">97.0 (97 / 97) · 99</td>
+<td style="text-align: center;">97.0 (97 / 97) · 99</td>
+<td style="text-align: center;">97.0 (97 / 97) · 92</td>
+<td style="text-align: center;"><strong>98.5</strong> (97 / 100) · 89</td>
+</tr>
+</tbody>
+</table>
+<p>Workflow cards, OVR · EFF:</p>
+<table>
+<thead>
+<tr>
+<th>Workflow</th>
+<th style="text-align: center;">claude-haiku-5.5</th>
+<th style="text-align: center;">gpt-6-luna</th>
+<th style="text-align: center;">mimo-v2.6-flash</th>
+<th style="text-align: center;">deepseek-v4.1-flash</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>risk-limit-breach</td>
+<td style="text-align: center;">94 · 85</td>
+<td style="text-align: center;">85 · 49</td>
+<td style="text-align: center;">99 · 99</td>
+<td style="text-align: center;">83 · 0</td>
+</tr>
+<tr>
+<td>ops-settlement</td>
+<td style="text-align: center;">89 · 80</td>
+<td style="text-align: center;">89 · 82</td>
+<td style="text-align: center;">83 · 65</td>
+<td style="text-align: center;">75 · 0</td>
+</tr>
+<tr>
+<td>risk-manager-control</td>
+<td style="text-align: center;">84 · 31</td>
+<td style="text-align: center;">80 · 0</td>
+<td style="text-align: center;">83 · 14</td>
+<td style="text-align: center;">83 · 8</td>
+</tr>
+<tr>
+<td>high-board</td>
+<td style="text-align: center;">91 · 95</td>
+<td style="text-align: center;">86 · 93</td>
+<td style="text-align: center;">94 · 89</td>
+<td style="text-align: center;">86 · 40</td>
+</tr>
+<tr>
+<td>trader-rfq</td>
+<td style="text-align: center;">80 · 15</td>
+<td style="text-align: center;">83 · 27</td>
+<td style="text-align: center;">78 · 14</td>
+<td style="text-align: center;">81 · 31</td>
+</tr>
+<tr>
+<td>confirmation-desk</td>
+<td style="text-align: center;">87 · 47</td>
+<td style="text-align: center;">83 · 20</td>
+<td style="text-align: center;">81 · 11</td>
+<td style="text-align: center;">81 · 6</td>
+</tr>
+</tbody>
+</table>
+<p>Correctness is close to saturated again: the best and worst objective means are 1.5 points
+apart, and the whole spread is Haiku trailing. Haiku has the best card on three workflows
+(ops-settlement, tied with luna, confirmation-desk, and risk-manager-control), though it
+trails the other three on risk-manager-control's objective score, by 3.8 to 6.4 points.</p>
+<h3>The repaired risk-manager-control</h3>
+<p>Every model ran it twice, two trials each at <code>high</code>: #148 (all four), then #149 (Haiku)
+and #150 (the trio). No call was truncated in any run; mimo had two malformed tool calls
+in one #148 trial.</p>
+<table>
+<thead>
+<tr>
+<th>Model, run</th>
+<th style="text-align: center;">Objective</th>
+<th style="text-align: center;">Trial 1 (checks)</th>
+<th style="text-align: center;">Trial 2 (checks)</th>
+<th>Misses</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>gpt-6-luna, #150 (used)</td>
+<td style="text-align: center;">97.4</td>
+<td style="text-align: center;">38 / 39</td>
+<td style="text-align: center;">38 / 39</td>
+<td>the stale-result wording check on step 1, both trials</td>
+</tr>
+<tr>
+<td>gpt-6-luna, #148</td>
+<td style="text-align: center;">97.4</td>
+<td style="text-align: center;">38 / 39</td>
+<td style="text-align: center;">38 / 39</td>
+<td>the same wording check, both trials</td>
+</tr>
+<tr>
+<td>mimo-v2.6-flash, #150 (used)</td>
+<td style="text-align: center;"><strong>100.0</strong></td>
+<td style="text-align: center;">39 / 39</td>
+<td style="text-align: center;">39 / 39</td>
+<td>none</td>
+</tr>
+<tr>
+<td>mimo-v2.6-flash, #148</td>
+<td style="text-align: center;">97.4</td>
+<td style="text-align: center;">38 / 39</td>
+<td style="text-align: center;">38 / 39</td>
+<td><code>get_latest_risk_run</code> not called on step 3 (trial 1); the <code>read-risk-result</code> skill not routed on step 1 (trial 2)</td>
+</tr>
+<tr>
+<td>deepseek-v4.1-flash, #150 (used)</td>
+<td style="text-align: center;">97.4</td>
+<td style="text-align: center;">38 / 39</td>
+<td style="text-align: center;">38 / 39</td>
+<td>the <code>read-risk-result</code> skill not routed on step 1, both trials</td>
+</tr>
+<tr>
+<td>deepseek-v4.1-flash, #148</td>
+<td style="text-align: center;">96.2</td>
+<td style="text-align: center;">37 / 39</td>
+<td style="text-align: center;">38 / 39</td>
+<td>the <code>read-risk-result</code> skill not routed on step 1, both trials (it routed <code>monitor-limits</code> in trial 1); the stale-result wording check (trial 1)</td>
+</tr>
+<tr>
+<td>claude-haiku-5.5, #149 (used)</td>
+<td style="text-align: center;">93.6</td>
+<td style="text-align: center;">36 / 39</td>
+<td style="text-align: center;">37 / 39</td>
+<td><code>read-risk-result</code> not routed in both trials; <code>run-risk</code> not routed in both (once it routed <code>product-term-interpretation</code>); <code>get_latest_risk_run</code> not re-called on step 3 (trial 1)</td>
+</tr>
+<tr>
+<td>claude-haiku-5.5, #148</td>
+<td style="text-align: center;">84.6</td>
+<td style="text-align: center;">35 / 39</td>
+<td style="text-align: center;">31 / 39</td>
+<td>below</td>
+</tr>
+</tbody>
+</table>
+<p>Each trio model scored the same or higher on its second pair (luna 97.4 and 97.4, mimo
+97.4 and 100, deepseek 96.2 and 97.4), so the trio's re-run did not lower anyone. Haiku
+rose by 9 points. On the second pair Haiku is last on this workflow by 3.8 points.</p>
+<p>Haiku's #148 (first pair) misses, by trial:</p>
+<ul>
+<li><strong>Trial 1 (89.7, 35 of 39).</strong> It never routed the <code>read-risk-result</code> skill on step 1
+  and did not re-call <code>get_latest_risk_run</code> on step 3, answering from the run it had just
+  seen (it said it "did not re-query the stored run"; the answer it recorded was
+  correct). On step 5 it ran its Greeks landscape over -10% to +10%, then, asked for delta
+  at -20%, recorded <code>null</code> rather than run a wider grid, because "the request did not ask
+  for" one. That is the one check that cost real content. On step 9 it wrote the governance
+  report without the string "AAPL" anywhere in it.</li>
+<li><strong>Trial 2 (79.5, 31 of 39).</strong> It did not route the <code>read-risk-result</code> or <code>run-risk</code>
+  skills (it called the pricing tools directly), and on step 7 it never called
+  <code>run_backtest</code>. It reported the backtest as not run, saying the run needed the async
+  track and it had no async dispatch tool, and handed the brief to a persona that only
+  estimated it. That one step cost four checks. On step 9 it routed <code>create-risk-report</code>
+  where the workflow expects <code>generate-report</code>.</li>
+</ul>
+<p>The other three models' misses are single checks. Haiku's #148 misses were about not doing
+steps: declining to widen a grid, and declining to start a backtest. **Neither recurred in</p>
+<h1>149.** Both trials ran the -30% to +30% landscape and answered delta at -20% correctly,</h1>
+<p>and both called <code>run_backtest</code>. What did recur is skill routing: Haiku missed
+<code>read-risk-result</code> in all four trials and <code>run-risk</code> in three of four. So the stable
+weakness is the skill step; the two content failures were each one trial in four.</p>
+<hr />
+<h2>Efficiency</h2>
+<p>Counted tool calls per match, mean of two trials, against each workflow's par.</p>
+<table>
+<thead>
+<tr>
+<th>Workflow</th>
+<th style="text-align: center;">par</th>
+<th style="text-align: center;">claude-haiku-5.5</th>
+<th style="text-align: center;">gpt-6-luna</th>
+<th style="text-align: center;">mimo-v2.6-flash</th>
+<th style="text-align: center;">deepseek-v4.1-flash</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>risk-limit-breach</td>
+<td style="text-align: center;">25</td>
+<td style="text-align: center;">28</td>
+<td style="text-align: center;">37</td>
+<td style="text-align: center;">22</td>
+<td style="text-align: center;">70</td>
+</tr>
+<tr>
+<td>ops-settlement</td>
+<td style="text-align: center;">30</td>
+<td style="text-align: center;">34</td>
+<td style="text-align: center;">34</td>
+<td style="text-align: center;">38</td>
+<td style="text-align: center;">72</td>
+</tr>
+<tr>
+<td>risk-manager-control</td>
+<td style="text-align: center;">24</td>
+<td style="text-align: center;">40</td>
+<td style="text-align: center;">50</td>
+<td style="text-align: center;">51</td>
+<td style="text-align: center;">78</td>
+</tr>
+<tr>
+<td>high-board</td>
+<td style="text-align: center;">24</td>
+<td style="text-align: center;">18</td>
+<td style="text-align: center;">17</td>
+<td style="text-align: center;">24</td>
+<td style="text-align: center;">38</td>
+</tr>
+<tr>
+<td>trader-rfq</td>
+<td style="text-align: center;">35</td>
+<td style="text-align: center;">64</td>
+<td style="text-align: center;">60</td>
+<td style="text-align: center;">64</td>
+<td style="text-align: center;">59</td>
+</tr>
+<tr>
+<td>confirmation-desk</td>
+<td style="text-align: center;">9</td>
+<td style="text-align: center;">18</td>
+<td style="text-align: center;">44</td>
+<td style="text-align: center;">141</td>
+<td style="text-align: center;">137</td>
+</tr>
+</tbody>
+</table>
+<p>Haiku is the leanest model on the confirmation desk by a wide margin: 18 calls for a morning
+of PDFs and scans, against 44 for luna and about 140 for mimo and deepseek. It stays at or
+near par on three more workflows. Its two inefficient workflows are
+risk-manager-control (40 calls against a par of 24, an EFF of 31; the others make 50 to 78) and trader-rfq (64
+against 35), where all four models overshoot.</p>
+<hr />
+<h2>What it costs</h2>
+<p>Two stated bases, because the board spans two price lists. <strong>Today's rates</strong> puts all four
+models on one price list (2026-10-09), so the columns compare like with like. <strong>Billed, as
+run</strong> is what the gateway charged for the calls that were made, which for the trio mixes
+the earlier and the later price of one model (below).</p>
+<table>
+<thead>
+<tr>
+<th>Workflow</th>
+<th style="text-align: center;">claude-haiku-5.5</th>
+<th style="text-align: center;">gpt-6-luna</th>
+<th style="text-align: center;">mimo-v2.6-flash</th>
+<th style="text-align: center;">deepseek-v4.1-flash</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>risk-limit-breach</td>
+<td style="text-align: center;">$0.109</td>
+<td style="text-align: center;">$0.069</td>
+<td style="text-align: center;">$0.062</td>
+<td style="text-align: center;">$0.156</td>
+</tr>
+<tr>
+<td>ops-settlement</td>
+<td style="text-align: center;">$0.115</td>
+<td style="text-align: center;">$0.063</td>
+<td style="text-align: center;">$0.092</td>
+<td style="text-align: center;">$0.140</td>
+</tr>
+<tr>
+<td>risk-manager-control</td>
+<td style="text-align: center;">$0.438</td>
+<td style="text-align: center;">$0.142</td>
+<td style="text-align: center;">$0.175</td>
+<td style="text-align: center;">$0.206</td>
+</tr>
+<tr>
+<td>high-board</td>
+<td style="text-align: center;">$0.102</td>
+<td style="text-align: center;">$0.065</td>
+<td style="text-align: center;">$0.076</td>
+<td style="text-align: center;">$0.101</td>
+</tr>
+<tr>
+<td>trader-rfq</td>
+<td style="text-align: center;">$0.263</td>
+<td style="text-align: center;">$0.156</td>
+<td style="text-align: center;">$0.217</td>
+<td style="text-align: center;">$0.172</td>
+</tr>
+<tr>
+<td>confirmation-desk</td>
+<td style="text-align: center;">$0.119</td>
+<td style="text-align: center;">$0.074</td>
+<td style="text-align: center;">$0.250</td>
+<td style="text-align: center;">$0.288</td>
+</tr>
+<tr>
+<td><strong>Twelve matches</strong></td>
+<td style="text-align: center;"><strong>$1.14</strong></td>
+<td style="text-align: center;"><strong>$0.57</strong></td>
+<td style="text-align: center;"><strong>$0.87</strong></td>
+<td style="text-align: center;"><strong>$1.06</strong></td>
+</tr>
+</tbody>
+</table>
+<p>What the gateway actually billed, against the same cells at today's rates:</p>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th style="text-align: center;">Billed, as run</th>
+<th style="text-align: center;">Today's rates</th>
+<th style="text-align: center;">Calls billed</th>
+<th>Basis</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>claude-haiku-5.5</td>
+<td style="text-align: center;">$0.44 on one workflow</td>
+<td style="text-align: center;">$1.14</td>
+<td style="text-align: center;">138</td>
+<td>per-call bill on risk-manager-control (#149); estimate on the other five</td>
+</tr>
+<tr>
+<td>gpt-6-luna</td>
+<td style="text-align: center;">$0.57</td>
+<td style="text-align: center;">$0.57</td>
+<td style="text-align: center;">869 of 869</td>
+<td>per-call bill</td>
+</tr>
+<tr>
+<td>mimo-v2.6-flash</td>
+<td style="text-align: center;">$0.87</td>
+<td style="text-align: center;">$0.87</td>
+<td style="text-align: center;">1075 of 1078</td>
+<td>per-call bill</td>
+</tr>
+<tr>
+<td>deepseek-v4.1-flash</td>
+<td style="text-align: center;">$0.98</td>
+<td style="text-align: center;">$1.06</td>
+<td style="text-align: center;">1070 of 1070</td>
+<td>per-call bill</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Haiku is not the cheap one.</strong> At today's rates it costs about 2.0 times luna, 31%
+  more than mimo, and about 8% more than deepseek. Its list rate is low ($0.10 in, $0.50
+  out per million tokens), but it makes about 190 model calls over the two trader-rfq
+  trials and carries a large prompt each time.</li>
+<li><strong>luna and mimo are billed exactly as the list says.</strong> The gateway's per-call bill sums
+  to the same figure to the cent. (Three of mimo's 1,078 calls could not be looked up.)</li>
+<li><strong>deepseek's price doubled between the two sets of runs, and the bill shows it.</strong> Its
+  route lists two input prices; the gateway charged the lower one on every call of those runs. That
+  lower price is twice what it was when #143 ran (table below). The two risk-manager-control
+  runs are the exception (next paragraph).</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Workflow</th>
+<th style="text-align: center;">Run</th>
+<th style="text-align: center;">Billed</th>
+<th style="text-align: center;">List, low end</th>
+<th style="text-align: center;">Ratio</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>risk-limit-breach</td>
+<td style="text-align: center;">#143</td>
+<td style="text-align: center;">$0.0782</td>
+<td style="text-align: center;">$0.1564</td>
+<td style="text-align: center;">0.50</td>
+</tr>
+<tr>
+<td>ops-settlement</td>
+<td style="text-align: center;">#143</td>
+<td style="text-align: center;">$0.0698</td>
+<td style="text-align: center;">$0.1395</td>
+<td style="text-align: center;">0.50</td>
+</tr>
+<tr>
+<td>risk-manager-control</td>
+<td style="text-align: center;">#150</td>
+<td style="text-align: center;">$0.4112</td>
+<td style="text-align: center;">$0.2056</td>
+<td style="text-align: center;">2.00</td>
+</tr>
+<tr>
+<td>high-board</td>
+<td style="text-align: center;">#147</td>
+<td style="text-align: center;">$0.1007</td>
+<td style="text-align: center;">$0.1007</td>
+<td style="text-align: center;">1.00</td>
+</tr>
+<tr>
+<td>trader-rfq</td>
+<td style="text-align: center;">#147</td>
+<td style="text-align: center;">$0.1725</td>
+<td style="text-align: center;">$0.1725</td>
+<td style="text-align: center;">1.00</td>
+</tr>
+<tr>
+<td>confirmation-desk</td>
+<td style="text-align: center;">#143</td>
+<td style="text-align: center;">$0.1438</td>
+<td style="text-align: center;">$0.2877</td>
+<td style="text-align: center;">0.50</td>
+</tr>
+</tbody>
+</table>
+<p>The four earlier cells cost half of today's low price or exactly that price. <strong>The
+risk-manager-control runs do not.</strong> In #150, the cell used here, the gateway billed $0.411,
+exactly twice the low end: every one of the 163 calls was billed at the <strong>higher</strong> listed
+price. In #148 the first 140 of 162 calls were billed at the higher price and the last 22
+at the lower one. So deepseek's price moved during #148 and stayed high in #150, and the
+"low end" this board uses for like-for-like cost is the lower of two prices the gateway has
+charged, not a fixed rate. Had every call been billed at the higher price, deepseek's
+twelve matches would cost about $2.12 instead of $1.06 (risk-manager-control alone is $0.41
+against $0.21). Its real bill for this board was $0.98. The cause of the switch is not
+known from the data.</p>
+<ul>
+<li><strong>Haiku's figure is mostly an estimate, and the estimate was checked.</strong> Five of its six
+  workflows ran before the gateway's request id was stored. #148 and #149 stored it. #149's 138
+  calls (the cell used) were billed one by one: <strong>$0.437630 billed against $0.437630
+  estimated</strong>, the same to the sixth decimal, as #148's Haiku cell was ($0.337177 against
+  $0.337177). That is a check on the method, on one workflow, not proof for the
+  other five. The gateway's
+  billing breakdown for a live Haiku call gives the real rates: $0.10 prompt, $0.50
+  completion, $0.01 cache read and <strong>$0.125 cache write</strong> (5-minute), which the price list
+  omits. Those, applied to the recorded token counts, give $1.14. Two assumptions are
+  inside that: the 5-minute write rate, since the arena sets no cache lifetime (the
+  1-hour rate would add about $0.20), and a 0.625 write rate for the 7 of 1,014 calls
+  whose prompts passed the list's 100k-token step, inferred from the same 1.25× premium and
+  worth about a cent.</li>
+</ul>
+<hr />
+<h2>Haiku's profile</h2>
+<h3>It tells you when it will not act</h3>
+<p>On the operations day, the last step asks the agent to reopen a snowball whose knock-out
+was recorded that morning, while the settlement it generated is still pending. The
+correct move is to try, be refused by the desk, and report that nothing was recorded.</p>
+<p>Haiku attempted the reopen, was refused, and reported that it was not recorded, in
+<strong>both</strong> trials, and it never voided the pending settlement. luna did so in one of two
+trials. mimo never refused, and cancelled the knock-out and voided the 512,500 CNY
+settlement both times. deepseek declined without attempting the call in one trial and
+reopened in the other.</p>
+<h3>It overrides a desk adjustment</h3>
+<p>Haiku's ops-settlement losses are judgment calls on a row, not tool errors. Cashflow 9302 was stale
+because the upstream print had been corrected after ops had manually adjusted the amount to
+91,000. The workflow scores keeping the desk's number. In both trials Haiku adopted the
+re-derived 90,000 and replaced the manual figure, reasoning that the override was
+superseded. In one trial it also declined to release a payment, citing a missing
+counterparty on the row, where the workflow expects the release. Both are defensible
+readings of the row, and both cost points.</p>
+<h3>It stopped at an error the others worked around</h3>
+<p>On the first Haiku run (#146), trader-rfq scored 68.5. The booking tool rejected a term
+that the product builder had accepted. mimo and deepseek, which hit the same error in
+run 143, retried without the term and booked. Haiku did not: in one trial it made no booking call, and in the other
+it tried once and reported that nothing had been booked. After the booking tool was
+repaired, Haiku scored 91.1 on #147. Its remaining losses there are scattered: it skipped
+the submit-for-approval step in one trial, and missed an answer and an unsupported-family
+check in the other. On the repaired workflow it is the lowest of the four, by 1.7 to 4.1
+points, on two trials.</p>
+<hr />
+<h2>What changed since the earlier board</h2>
+<ul>
+<li><strong>The booking tool now accepts the term that the builder accepts.</strong> <code>book_position</code>
+  rejected <code>initial_price</code> for a barrier option whenever the terms used <code>exercise_date</code>.
+  Fixed on 2026-10-08. Every trader-rfq and high-board cell on this board is after the fix.</li>
+<li><strong>high-board is v4.</strong> Its seeded risk-run ids were literal 1–5 rather than the book's
+  real ids, so its position-level evidence did not match the book. The governed valuation
+  run is now seeded, step 6 states an ungoverned figure to refuse, and step 8 asks for
+  its artifact. The two perfect high-board trials on this board are one Haiku trial
+  (35 of 35) and one luna trial.</li>
+<li><strong>risk-manager-control is v3.</strong> Its stale risk run pinned position ids 1–3, which are not
+  the control book's positions on the live DB. The fix seeds the real ids.</li>
+<li><strong>The scorer accepts an integer sent as its decimal string.</strong> mimo's operations row was
+  re-scored under it in the earlier post (79.5 to 88.6), and re-scoring the other rows
+  changed nothing; Haiku's rows were scored under it from the start.</li>
+</ul>
+<hr />
+<h2>Caveats</h2>
+<ul>
+<li><strong>Two trials per cell.</strong> The top two OVRs are within that noise, and several models'
+  two trials on one workflow differ by 8 to 14 points (luna scored 100 and 85.7 on
+  high-board).</li>
+<li><strong>One effort level.</strong> Every contestant ran at <code>high</code>. Haiku's other levels are
+  unmeasured, and the gateway's acceptance of them says nothing about whether they differ.</li>
+<li><strong>Two eras on three workflows.</strong> Haiku's three workflows ran twelve days after the trio's,
+  on later app builds. The scoring is identical for the three workflows that stay on the
+  earlier runs.</li>
+<li><strong>risk-manager-control was run twice, and the board uses the second pair.</strong> The first
+  pair (#148) is shown beside it and gives a different top two (Haiku 86.2, mimo 86.3). Haiku's
+  re-run followed its first pair's low score; the trio's re-run was added to remove that
+  asymmetry, and the trio did not score lower on it. Four Haiku trials average 89.1, and
+  Haiku is the lowest of the four on this workflow either way. The figures are close, but
+  not comparable, to the earlier board's.</li>
+<li><strong>Haiku's cost is partly an estimate.</strong> Its rates are measured and matched the bill
+  exactly on the one workflow billed per call; the other five are rate-verified estimates.</li>
+<li><strong>deepseek's price is not fixed.</strong> The gateway billed it at the higher of its two listed
+  prices for part of #148 and for all of #150, so its cost per match depends on when it ran.</li>
+<li><strong>Latency is not reported.</strong> Wall-clock time depends on the gateway as much as the model.</li>
+</ul>
+<p class="footer-note">Rendered from
+<code>docs/arena/2026-10-09-flash-quartet-haiku-55.md</code> ·
+OTC Desk Agent Arena · Run.</p>
+</body></html>

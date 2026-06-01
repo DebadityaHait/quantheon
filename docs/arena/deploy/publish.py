@@ -1,0 +1,328 @@
+"""Transport the built site to the server, then prove it is actually serving.
+
+Verification asserts on BODY CONTENT, never on status alone: the open-slides-zero
+frontend container answers `try_files $uri $uri/ /index.html`, so before the nginx
+alias exists every path under /arena/ returns 200. ABSENT_PROBE is the control — if
+a path that cannot exist returns 200, the SPA is still answering and the deploy has
+not taken effect.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from html import escape
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ARENA_DIR = HERE.parent
+sys.path.insert(0, str(ARENA_DIR))
+sys.path.insert(0, str(HERE))
+
+from build import missing_from_live  # noqa: E402
+from manifest import Post, load_manifest  # noqa: E402
+
+HOST = "ubuntu@43.156.158.156"
+SSH_KEY = "/Users/fuxinyao/ppt-pro-server/slides.pem"
+REMOTE_DIR = "/opt/open-slides-zero/runtime/arena/"
+BASE_URL = "https://www.artena.one/arena/"
+
+# Uploaded by hand so the GPT-Image-2 ability-card run could fetch a background by
+# public URL. Referenced from nowhere in either repo, so nothing else protects them.
+ORPHAN_ASSETS = ("model-ability-card-bg-v1.webp", "model-ability-card-bg-v2.webp")
+
+ABSENT_PROBE = "__deploy_probe_absent__.html"
+
+# Set at the `server` level in open-slides-zero's nginx config. They are checked
+# because nginx inherits `add_header` "if and only if there are no add_header
+# directives defined on the current level" — so ONE add_header in the /arena/
+# location silently drops all six. That shipped, and a verifier that looked only
+# at status codes and body text reported a clean deploy.
+SECURITY_HEADERS = (
+    "content-security-policy",
+    "strict-transport-security",
+    "x-frame-options",
+    "x-content-type-options",
+    "referrer-policy",
+    "permissions-policy",
+)
+
+
+def rsync_cmd(src: Path, host: str, remote: str, key: str, dry_run: bool) -> list[str]:
+    # -v is load-bearing, not cosmetic: rsync only emits "deleting <path>" lines
+    # when verbose, and bootstrap.sh's safety guard greps for exactly those to
+    # refuse a cutover that would remove server files no build produces. Without
+    # it the guard silently matches nothing and always passes.
+    cmd = ["rsync", "-azv", "--delete"]
+    if dry_run:
+        cmd.append("-n")
+    cmd += ["-e", f"ssh -i {key} -o StrictHostKeyChecking=accept-new"]
+    cmd += [f"{src}/", f"{host}:{remote}"]
+    return cmd
+
+
+def fetch(url: str, timeout: int = 20) -> tuple[int, str, bytes]:
+    req = urllib.request.Request(url, headers={"User-Agent": "arena-deploy/1"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.headers.get("Content-Type", ""), r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, (e.headers.get("Content-Type", "") if e.headers else ""), e.read()
+
+
+def fetch_headers(url: str, timeout: int = 20) -> dict[str, str]:
+    """Lower-cased response headers for a HEAD-equivalent fetch."""
+    req = urllib.request.Request(url, headers={"User-Agent": "arena-deploy/1"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return {k.lower(): v for k, v in r.headers.items()}
+    except urllib.error.HTTPError as e:
+        return {k.lower(): v for k, v in (e.headers or {}).items()}
+
+
+WF_ANCHOR_RE = re.compile(r'<section class="wf" id="([a-z0-9-]+)"')
+
+
+def _find_anchors(html: str) -> list[str]:
+    return WF_ANCHOR_RE.findall(html)
+
+
+MODEL_PAGE_RE = re.compile(r'href="(models/[A-Za-z0-9._-]+\.html)"')
+
+
+def model_pages(html: str) -> list[str]:
+    """The per-model pages a built roster links, in page order.
+
+    Read from the artifact for the same reason the workflow anchors are: the
+    check has to verify what was uploaded, not what we meant to upload. A roster
+    is nothing but routing, so a roster whose links 404 is worse than no roster.
+    """
+    seen: list[str] = []
+    for path in MODEL_PAGE_RE.findall(html):
+        if path not in seen:
+            seen.append(path)
+    return seen
+
+
+def workflow_anchors(html: str) -> list[str]:
+    """The workflow sections a built leaderboard claims, in page order.
+
+    Read from the artifact rather than re-derived from boards.json, so the check
+    verifies what was actually uploaded rather than what we meant to upload.
+    """
+    return _find_anchors(html)
+
+
+# The methodology page is built unconditionally, so it is verified the same way
+# — no "an empty list means the page was not built" escape hatch, which is what
+# the leaderboard and cards checks legitimately need.
+METHODOLOGY_PAGE = "methodology.html"
+METHODOLOGY_HEADING = "How the Arena measures"
+
+# The roster's search is the site's only script, and a client-side feature fails
+# INVISIBLY: a roster that lost it still serves 200 with every row present and
+# simply never filters. Nothing else in the pipeline would notice, which is why
+# the verifier reads the served body for the hooks as well as the anchors.
+#
+# All three, not just the input: a page keeping the control while losing the
+# per-section hooks would serve a box that swallows keystrokes, which is the one
+# outcome the hidden-until-JS design exists to prevent.
+ROSTER_SEARCH_PROBES = ("data-roster-input", "data-roster-section",
+                        "data-roster-count")
+
+
+def _roster_search_failures(page: str) -> list[str]:
+    return [f"models.html: served roster is missing {probe}"
+            for probe in ROSTER_SEARCH_PROBES if probe not in page]
+
+
+def verify_live(
+    base_url: str,
+    posts: list[Post],
+    assets: tuple[str, ...] = ORPHAN_ASSETS,
+    security_headers: tuple[str, ...] = SECURITY_HEADERS,
+    workflow_anchors: tuple[str, ...] | list[str] = (),
+    model_anchors: tuple[str, ...] | list[str] = (),
+    model_pages: tuple[str, ...] | list[str] = (),
+) -> list[str]:
+    """Return failure messages; an empty list means the site is healthy.
+
+    An empty anchor list means that page was not built, which is a valid site —
+    not a reason to fail.
+    """
+    failures: list[str] = []
+
+    status, _, body = fetch(base_url)
+    index = body.decode("utf-8", "replace")
+    if status != 200:
+        failures.append(f"index: expected 200, got {status}")
+    else:
+        for name in missing_from_live(index, posts):
+            failures.append(f"index: no link to {name}")
+        for p in posts:
+            # Titles are HTML-escaped on the page, so compare the escaped form — a
+            # raw comparison would false-alarm on any title containing & or <.
+            if escape(p.title) not in index:
+                failures.append(f"index: title missing for {p.html_name}")
+
+    for p in posts:
+        url = f"{base_url}{p.html_name}"
+        status, _, body = fetch(url)
+        text = body.decode("utf-8", "replace")
+        if status != 200:
+            failures.append(f"{p.html_name}: expected 200, got {status}")
+        elif escape(p.title) not in text:
+            failures.append(f"{p.html_name}: served page does not contain its title")
+
+    for name in assets:
+        status, ctype, _ = fetch(f"{base_url}{name}")
+        if status != 200:
+            failures.append(f"{name}: expected 200, got {status}")
+        elif "image" not in ctype:
+            failures.append(f"{name}: expected an image content-type, got {ctype!r}")
+
+    for page_name, anchors in (("leaderboard.html", workflow_anchors),
+                               ("models.html", model_anchors)):
+        if not anchors:
+            continue
+        status, _, body = fetch(f"{base_url}{page_name}")
+        page = body.decode("utf-8", "replace")
+        if status != 200:
+            failures.append(f"{page_name}: expected 200, got {status}")
+            continue
+        served = set(_find_anchors(page))
+        for slug in anchors:
+            if slug not in served:
+                failures.append(f"{page_name}: no section for workflow {slug}")
+        if page_name == "models.html":
+            failures += _roster_search_failures(page)
+
+    for path in model_pages:
+        status, _, body = fetch(f"{base_url}{path}")
+        if status != 200:
+            failures.append(f"{path}: expected 200, got {status}")
+            continue
+        # A 200 proves nothing under the SPA catch-all, so read the body: the
+        # page must name the model whose row pointed at it.
+        model = path.rsplit("/", 1)[-1][: -len(".html")]
+        if escape(model) not in body.decode("utf-8", "replace"):
+            failures.append(f"{path}: served page does not name {model}")
+
+    # Unconditional, because the build is: methodology.html is prose with one
+    # derived table, so unlike the leaderboard it is never legitimately absent —
+    # and the masthead links it from every page, so a 404 here is sitewide.
+    status, _, body = fetch(f"{base_url}{METHODOLOGY_PAGE}")
+    if status != 200:
+        failures.append(f"{METHODOLOGY_PAGE}: expected 200, got {status}")
+    elif METHODOLOGY_HEADING not in body.decode("utf-8", "replace"):
+        failures.append(
+            f"{METHODOLOGY_PAGE}: served page does not carry its own heading"
+        )
+
+    headers = fetch_headers(base_url) if security_headers else {}
+    for name in security_headers:
+        if name not in headers:
+            failures.append(
+                f"index: missing security header {name!r} — an `add_header` in the "
+                "/arena/ location discards ALL inherited ones; use `expires` instead"
+            )
+
+    # Both depths. `try_files $uri $uri/ =404` resolves a nested path by a
+    # different branch than a top-level one, so proving the alias answers at the
+    # root does not prove it answers under models/, where 27 pages now live.
+    for probe in (ABSENT_PROBE, f"models/{ABSENT_PROBE}"):
+        status, _, _ = fetch(f"{base_url}{probe}")
+        if status != 404:
+            failures.append(
+                f"{probe}: expected 404, got {status} — a catch-all is still "
+                "answering, so the static alias is not serving this path"
+            )
+
+    return failures
+
+
+def _posts() -> list[Post]:
+    return load_manifest(HERE / "posts.yaml", ARENA_DIR)
+
+
+def _cmd_publish(args) -> int:
+    build_dir = args.build
+    if not (build_dir / "index.html").is_file():
+        print(f"no built site at {build_dir} — run: deploy.sh build", file=sys.stderr)
+        return 1
+
+    cmd = rsync_cmd(build_dir, args.host, args.remote, args.key, args.dry_run)
+    print(" ".join(cmd))
+    proc = subprocess.run(cmd)
+    if proc.returncode != 0:
+        return proc.returncode
+    if args.dry_run:
+        print("dry run — nothing transferred, skipping verification")
+        return 0
+    if args.no_verify:
+        print("uploaded; verification skipped (--no-verify)")
+        return 0
+
+    def _anchors_of(name: str) -> list[str]:
+        page = build_dir / name
+        return workflow_anchors(page.read_text()) if page.is_file() else []
+
+    roster = build_dir / "models.html"
+    failures = verify_live(
+        args.base_url, _posts(),
+        workflow_anchors=_anchors_of("leaderboard.html"),
+        model_anchors=_anchors_of("models.html"),
+        model_pages=model_pages(roster.read_text()) if roster.is_file() else (),
+    )
+    if failures:
+        print("\nVERIFICATION FAILED:", file=sys.stderr)
+        for f in failures:
+            print(f"  - {f}", file=sys.stderr)
+        return 1
+    print(f"\nverified {args.base_url} — all pages, assets and the 404 probe are healthy")
+    return 0
+
+
+def _cmd_status(args) -> int:
+    posts = _posts()
+    status, _, body = fetch(args.base_url)
+    index = body.decode("utf-8", "replace")
+    unpublished = missing_from_live(index, posts)
+    print(f"{args.base_url} -> HTTP {status}, {len(posts)} posts in the manifest")
+    if unpublished:
+        print("NOT on the live index:")
+        for name in unpublished:
+            print(f"  - {name}")
+        return 1
+    print("every manifest post is linked from the live index")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Publish the arena blog.")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    for name in ("publish", "status"):
+        p = sub.add_parser(name)
+        p.add_argument("--base-url", default=BASE_URL)
+        if name == "publish":
+            p.add_argument("--build", type=Path, default=HERE / "build")
+            p.add_argument("--host", default=HOST)
+            p.add_argument("--remote", default=REMOTE_DIR)
+            p.add_argument("--key", default=SSH_KEY)
+            p.add_argument("--dry-run", action="store_true")
+            p.add_argument(
+                "--no-verify",
+                action="store_true",
+                help="upload only; used by bootstrap, where the alias does not exist yet",
+            )
+
+    args = ap.parse_args(argv)
+    return _cmd_publish(args) if args.cmd == "publish" else _cmd_status(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,261 @@
+# Which arena runs are published boards, and which workflow each one covers.
+#
+# A run is NOT a board: the arena database holds one-model smokes and A/B probes
+# on the same workflows as the real fields. Only the runs listed here reach the
+# leaderboard page. Scores are never written here — collect_boards.py derives
+# every number from the database.
+#
+# Required: run, workflow.  Optional: label (defaults to "Run #<n>"), post.
+#
+# `provisional:` lists runs published as CARDS ONLY — never on the leaderboard.
+# A one-model smoke has no field, so a rank of #1 of 1 measures nothing; but an
+# ability card is an ABSOLUTE measurement (passed/total per axis, EFF against
+# each workflow's own par), so it stays meaningful with no opponent. That is the
+# same asymmetry that lets a consolidated card average across workflows while
+# the leaderboard never merges runs.
+# Required: run.  Optional: label, note.
+#
+# Card-era boards only. Runs #8 and #9 are deliberately absent: their reports
+# ranked models on a blended objective+judge score that the 2026-07-05 scoring
+# reform retired, so re-deriving them on today's objective axis reorders their
+# own published podium. They stay readable as reports rather than being
+# republished under a ranking their text does not support.
+
+boards:
+  - run: 133
+    workflow: confirmation-desk-day
+    post: 2026-08-30-run133-confirmation-desk-day.md
+    note: >-
+      The first board on a vision workflow: four `vision`-tagged models, two
+      trials each, on a harness repaired after a pilot run found three defects
+      that each cost a real contestant real points. EFF is UNCALIBRATED here --
+      the workflow declares no par_tool_calls, so efficiency is scored against a
+      theoretical minimum of 9 tool calls and every EFF lands in 10-24; par was
+      deliberately not set because the calibration instrument is the median of
+      FULLY-CORRECT trials and this board produced none. Read the ranking as
+      consistency, procedure and volume rather than as a vision ranking: three of
+      the four designed vision traps are saturated at 8/8 across the whole field,
+      and 22 of 28 checks carry no ability signal. Two arms were re-run:
+      glm-5-3-flash after a transport-level RemoteProtocolError cost it one of
+      two trials (at full depth it places second rather than first), and
+      gemini-3-7-flash RE-SCORED 2026-08-31 after two cross-contestant read
+      channels in the harness were found and closed -- its first two
+      measurements (objective 81.8, then 86.3) included values read from other
+      contestants' stored results, and its clean run lands at 77.3 with GRD 59,
+      identical to gpt-5-6-luna's, because both fail the same deterministic
+      conf-08 extraction-pipeline wall. Neither GRD 59 is a sight deficit; this
+      workflow's grounding axis partly measures the contestant-routed
+      extraction sub-call. Full history in the report's correction and
+      resolution sections.
+
+  - run: 20
+    workflow: risk-manager-control-day
+    post: 2026-07-13-run20-otc-desk-agent-arena.md
+
+  - run: 33
+    workflow: trader-rfq-booking-day
+    post: 2026-07-20-run33-otc-desk-agent-arena.md
+
+  - run: 94
+    workflow: high-board-portfolio-review-day
+    post: 2026-07-29-run94-otc-desk-agent-arena.md
+
+  # No report: the field was run and scored, but never written up.
+  - run: 101
+    workflow: risk-limit-breach-day
+    note: >-
+      RESCORED 2026-08-27. This workflow had never declared a par_tool_calls, so
+      EFF was scored against the theoretical minimum of 11 tool calls — a target
+      no trial in the arena's history has ever come close to (the leanest is 15).
+      It now declares a calibrated par of 25, the median of the 31 fully-correct
+      trials ever recorded on it, which moves EFF from a 19-56 band to 2-99 and
+      changes the rank of 10 of these 18 rows. Cards are derived on read, so the
+      figures below are the recalculated ones and no longer match any earlier
+      published version of this board. Read the top with care: the leading four
+      tie at OVR 98 on identical grounding, adherence and synthesis, so their
+      order is settled by EFF and then PRC — which places Grok 4.5 third despite
+      a perfect 100.0 objective score. 34 of this workflow's 36 checks now pass
+      for every contestant; it no longer separates a strong field.
+
+provisional:
+  - run: 138
+    label: "Run #138 — the same model at low, the effort arm in full"
+    post: 2026-09-03-run134-gemini38-flash.md
+    note: >-
+      Gemini 3.8 Flash across all six golden workflows at low, one trial each —
+      the paired arm for run #134 above, same model, same route, same harness,
+      same commit, with reasoning effort as the ONLY variable. Read the two
+      cards together: this one is why run #134 should not be read as a model
+      regression. Dropping from xhigh to low cuts tool calls 53% (161.6 to 75.3
+      per workflow) and costs 1.8 objective points (95.6 to 93.8) — and OVR
+      RISES from 79 to 86, because EFF goes from 3.7 to 46.8. Four of the six
+      workflows score IDENTICALLY at both efforts, including both perfect
+      100.0s, so the accuracy that xhigh buys is confined to two workflows and
+      is worth less than the calls it spends. The effort effect on searching is
+      NOT uniform: on five workflows filesystem search all but vanishes at low,
+      but on the vision workflow it barely moves (151 calls against 159), so
+      that workflow's rummaging is inherent rather than effort-driven. ONE
+      TRIAL per cell, so CON is not measured rather than perfect, and the
+      figures carry real single-sample noise — ops-settlement-day was measured
+      twice at low, in run #137 and here, and scored 93.2 then 100.0.
+
+  - run: 134
+    label: "Run #134 — Gemini 3.8 Flash, the first board after the thought-signature fix"
+    post: 2026-09-03-run134-gemini38-flash.md
+    note: >-
+      Gemini 3.8 Flash across all SIX golden workflows at xhigh, published as
+      cards only: one model has no field, so a rank of #1 of 1 would measure
+      nothing, and six workflows cannot be folded into a single leaderboard row.
+      Two trials per cell EXCEPT confirmation-desk-day, which carries ONE — its
+      second trial was lost to a ZenMux 402 quota exhaustion and recorded
+      invalid/infra_blank rather than scored, so that workflow's CON is not
+      measured rather than perfect. Zero truncation and zero malformed tool calls
+      across all six arms, measured rather than assumed.
+      This is the FIRST board to run after the Gemini thought-signature fix.
+      Gemini 3 routes return an encrypted signature beside every tool call and
+      require it echoed back on the assistant turn carrying that call;
+      ChatOpenAI does not preserve that field by design, so the second model
+      turn of every tool loop was refused with a 400 and this run initially
+      failed on all six workflows. The control is what settles the reading:
+      gemini-3.7-flash, which has four published boards on this same route,
+      fails identically once the field is stripped. So the enforcement is new,
+      not the model, and no earlier board's numbers move.
+      The finding is correctness bought at a price that outweighs it. Against
+      the gemini-3.7-flash arm of run #129 — same route, same xhigh effort,
+      the five workflows they share — 3.8 is 2.8 objective points BETTER (97.1
+      against 94.3, ahead on four of the five, with a perfect 100.0 on two
+      workflows). It spends 84% MORE tool calls to get there (96 against 52),
+      and EFF collapses from 31 to 4. The efficiency loss more than eats the
+      correctness gain: mean OVR over those same five workflows is 80.6 against
+      3.7's 83.0, so AT THIS EFFORT the newer model finishes 2.4 points behind its
+      predecessor while being the more accurate of the two. EFF is 0 on four of
+      the six workflows, and the vision workflow alone took 490 tool calls.
+      CORRECTED 2026-09-04 — read this card as a measurement of xhigh, not of
+      the model. A follow-up arm (run #137) pinned the same model to low on
+      ops-settlement-day: it cut filesystem search calls by 94%, from 36 to 2,
+      and total calls by 56%, posting OVR 89 there against 83 at xhigh and 85
+      for its predecessor — the best cell measured on that workflow. The
+      over-execution this card reports is substantially an effort setting
+      rather than a model trait, and the desk default is low. A low arm across
+      all six workflows has not been measured, so no low card is published.
+
+  - run: 104
+    post: 2026-08-13-run104-otc-desk-agent-arena.md
+    note: >-
+      An A/B probe against Grok 4.6 over four workflows, two trials each — a
+      pair, not a field, so neither card is ranked. Read this as a DIFFERENT
+      model from the consolidated deepseek-v4-pro card: DeepSeek replaced the
+      weights behind that id on 2026-08-13, so the boards measure the earlier
+      one.
+      risk-limit-breach-day was also rescored 39 → 38 points after Run #101,
+      so objective figures are not comparable across the two.
+      RESCORED 2026-08-27: risk-limit-breach-day and ops-settlement-day were
+      given calibrated pars (25 and 30) where they previously had none, so EFF
+      on those two workflows was being scored against a theoretical minimum no
+      real run achieves. Cards derive on read, so this card's figures are the
+      recalculated ones; the affected per-workflow OVRs rose by 1 to 9 points
+      and every other workflow is unchanged.
+
+  - run: 113
+    note: >-
+      A single-model smoke across all five golden workflows, one trial each.
+      Published for its ability card only: with no field there is no rank to
+      report, and one trial cannot disperse, so CON is not measured.
+      RESCORED 2026-08-27: risk-limit-breach-day and ops-settlement-day were
+      given calibrated pars (25 and 30) where they previously had none, so EFF
+      on those two workflows was being scored against a theoretical minimum no
+      real run achieves. Cards derive on read, so this card's figures are the
+      recalculated ones; the affected per-workflow OVRs rose by 1 to 9 points
+      and every other workflow is unchanged.
+
+  - run: 115
+    note: >-
+      A single-model smoke across all five golden workflows, one trial each —
+      cards only, for the same reasons as Run #113: no field means no
+      rank, and one trial cannot disperse, so CON is not measured. This is also
+      the FIRST run after the Anthropic-protocol output budget was raised from
+      langchain's 4096-token fallback to 32768. GLM 5.3 routes over that
+      protocol, and the capped attempt (Run #114, unpublished) truncated on
+      5-13% of its calls per workflow — a truncated turn emits reasoning and
+      nothing else, so it produced no text and no tool call at all. That attempt
+      averaged OVR 72 against 84 here, with risk-manager-control-day moving
+      67 → 87 on the budget alone. Read EFF against the older boards with care:
+      every Anthropic-protocol contestant on them ran under a cap this run did
+      not.
+      RESCORED 2026-08-27: risk-limit-breach-day and ops-settlement-day were
+      given calibrated pars (25 and 30) where they previously had none, so EFF
+      on those two workflows was being scored against a theoretical minimum no
+      real run achieves. Cards derive on read, so this card's figures are the
+      recalculated ones; the affected per-workflow OVRs rose by 1 to 9 points
+      and every other workflow is unchanged.
+
+  - run: 132
+    label: "Run #132 — GLM 5.3 at max, the sibling control for run #131"
+    post: 2026-08-28-run131-flash-newcomers.md
+    note: >-
+      GLM 5.3 across all five golden workflows at `max`, one trial per cell — run
+      deliberately as the like-for-like control for GLM 5.3 Flash in run #131, and
+      published as cards for the same reason: five workflows in one run cannot be
+      folded into a ranked board row. It exists because GLM 5.3's only other full
+      board is run #115, at UNPINNED vendor-default effort and from before the
+      upstream pinning and the trap fix, so differencing that against #131 would
+      have charged the flash model for a harness repair and an effort change at
+      once. The re-run justified itself: at `max` on today's harness GLM 5.3
+      completes high-board-portfolio-review-day in 17 tool calls where run #115
+      took 41. Against its flash sibling it is 2.2 objective points ahead for a
+      7.8-point OVR gap, all of it EFF, on 57% fewer tool calls — except on the
+      flagship, where both models score EFF 0 and the pro model is no leaner (54
+      calls against 58). The flagship arm died twice on transport errors
+      (APIConnectionError, recorded `invalid`/`infra_error`, never scored as a
+      model failure) and is taken from the third, clean attempt via `--resume 132`.
+
+  - run: 131
+    label: "Run #131 — two flash-tier newcomers at max effort"
+    post: 2026-08-28-run131-flash-newcomers.md
+    note: >-
+      GLM 5.3 Flash and Qwen 3.8 Flash, published 2026-08-26 and 2026-08-27, across
+      all five golden workflows at `max` — cards only, because a two-model run over
+      five workflows has no field to rank within and folding five workflows into one
+      row would publish a cross-workflow average under a single workflow's heading.
+      ONE TRIAL PER CELL, so CON is not measured rather than perfect, and every
+      figure is a single sample; the run #129 cards these are read against were
+      measured at two trials. Both models are competitive on correctness — they post
+      the highest objective score any contestant has recorded on
+      trader-rfq-booking-day (95.2) and tie the best on the flagship (94.9) — and
+      place sixth and seventh of nine on EFF alone, which is zero in five of their
+      ten cells. Both are pinned to the Anthropic wire protocol: Qwen's `alibaba`
+      upstream returns tool-call continuation deltas with an empty id (263 of 263
+      measured), which would otherwise floor every match at 7.7.
+
+  - run: 129
+    label: "Run #129 — flash tier at each model's effort ceiling"
+    post: 2026-08-26-run129-flash-tier-board.md
+    note: >-
+      A real seven-model field, but across all five golden workflows at once, so
+      it is published as cards rather than a ranked board: a leaderboard section
+      covers one workflow, and folding five into a single row per contestant
+      would publish a cross-workflow average under one workflow's heading. Two
+      trials per cell. This is the first flash-tier field measured after four
+      harness defects were fixed — the Anthropic-protocol 4096-token output cap,
+      the unpinned ZenMux upstream lottery, the unmeasurable truncated turn and
+      malformed tool call, and the dead trap step — so it is NOT comparable to
+      runs #8-#126 for these models. Every model ran at its OWN measured effort
+      ceiling (max, xhigh or high depending on the route), which makes this a
+      capability measurement, not a shippable configuration; run #130 is
+      the same field pinned to `low`.
+
+  - run: 130
+    label: "Run #130 — the same field at low effort"
+    post: 2026-08-26-run129-flash-tier-board.md
+    note: >-
+      The paired arm of run #129: identical models, workflows, trials, output
+      budget and commit, with every contestant pinned to `low` so effort is the
+      only variable and each model is its own control. The ranking reorders —
+      Gemini 3.7 Flash goes from third to first and leads on both axes — and
+      four of seven models score HIGHER here than at their ceiling, because
+      lower effort cuts tool calls and EFF is the axis with the widest spread.
+      On the 25 of 35 paired cells where both arms have enough trial
+      consistency to be readable, `low` costs a mean 2.4 objective points, and
+      under one point for three of the four models with a clean sample. Four
+      arms were swept to invalid by a network outage and re-run with
+      `--resume 130`; all 35 are scored at the same effort and budget.

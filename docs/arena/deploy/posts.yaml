@@ -1,0 +1,272 @@
+# The arena blog feed. Authoritative for publication: a report absent from this
+# file is not published, whatever exists in docs/arena/.
+#
+# Required: file, date, tags, title, blurb.  Optional: run, chips, standings,
+# assets, publish.  A missing blurb FAILS THE BUILD by design — never let a
+# generated first paragraph ship as editorial copy.
+
+- file: 2026-10-09-haiku-55-flash-tier.md
+  date: 2026-10-09
+  tags: [board]
+  chips: ["4 models", "6 workflows", "2 trials", "billed cost"]
+  title: "Claude Haiku 5.5 ties for the top of the flash tier"
+  blurb: >
+    We put Claude Haiku 5.5 through the six desk days beside gpt-6-luna, mimo-v2.6-flash and
+    deepseek-v4.1-flash. It posts the highest card, but the lead over mimo is 1.2 points, which
+    two trials per cell cannot separate. Where it is clearly ahead is efficiency: it reaches
+    the answer in fewer model rounds and repeats fewer calls than any of them, without
+    reasoning more. It is also the least accurate of the four on the checks, and it costs
+    about twice luna.
+  standings:
+    - {rank: 1, model: "claude-haiku-5.5", score: 88, note: "OVR 87.5, EFF 59, objective 94.8"}
+    - {rank: 2, model: "mimo-v2.6-flash", score: 86, note: "OVR 86.3, objective 95.9"}
+    - {rank: 3, model: "gpt-6-luna", score: 84, note: "OVR 84.3, $0.57 for twelve matches"}
+    - {rank: 4, model: "deepseek-v4.1-flash", score: 82, note: "objective 96.5, EFF 14"}
+  publish: true
+
+- file: 2026-10-02-run145-effort-curves.md
+  date: 2026-10-02
+  tags: [board, research]
+  run: "Run #145"
+  chips: ["3 models", "10 effort arms", "6 workflows", "2 trials"]
+  title: "What the effort knob buys three flash models"
+  blurb: >
+    We ran gpt-6-luna, mimo-v2.6-flash and deepseek-v4.1-flash at every reasoning effort
+    their routes really offer, across all six desk workflows. None got reliably better.
+    DeepSeek at `max` reasoned thirteen times as much and cost nearly nine times as much
+    for the same score. And the claim that each workflow has its own best effort did not
+    hold on held-out trials: choosing per workflow lost to one global setting.
+  publish: true
+
+- file: 2026-09-27-run143-flash-trio.md
+  date: 2026-09-27
+  tags: [board]
+  run: "Run #143"
+  chips: ["3 models", "6 workflows", "2 trials", "billed cost"]
+  title: "Three flash models, three different winners"
+  blurb: >
+    gpt-6-luna, mimo-v2.6-flash and deepseek-v4.1-flash each worked six desk days twice.
+    Luna does the work best, fastest and cheapest. Mimo edges the overall rating on
+    efficiency, but two of its matches ran for hours, and on one trap it changed the
+    book to make its answer true. DeepSeek is the most careful and consistent, and it
+    spends twice the tool calls, yet it costs the same as Luna because its route bills
+    at the lower rate.
+  standings:
+    - {rank: 1, model: "mimo-v2.6-flash", score: 85, note: "OVR 84.7, objective 94.1"}
+    - {rank: 2, model: "gpt-6-luna", score: 84, note: "objective 96.4, $0.58 billed"}
+    - {rank: 3, model: "deepseek-v4.1-flash", score: 80, note: "CON 93, EFF 1"}
+  publish: true
+
+- file: 2026-09-22-jev-guard-sweep.md
+  date: 2026-09-22
+  tags: [research]
+  chips: ["28 tools", "628 past calls", "12 real traps"]
+  title: "What would Jev have flagged?"
+  blurb: >
+    The guard from our first Jev post has written no verdicts: it runs only in AUTO, and
+    nobody has used AUTO with it on. So we asked Jev about 628 calls that had already run,
+    rebuilding what the guard would have seen. It would have flagged the arena's
+    refusal-clearing void on eleven of twelve. The question written for that trap caught
+    exactly the six that followed a refusal, because the other models reached the void
+    another way. The run also found three defects in our own evidence plumbing.
+  publish: true
+
+- file: 2026-09-22-jev-limit-review.md
+  date: 2026-09-22
+  tags: [research]
+  chips: ["4 questions", "12 held-out cases", "225 live calls"]
+  title: "Can Jev read a limit waiver?"
+  blurb: >
+    Jev now reads the text on a limit breach: how complete a waiver's reason is, which
+    claims it makes, and where the comment thread leaves the incident, while code checks
+    the claims against the database. On twelve held-out rationales it matched the hand
+    grade on eleven, and its own confidence flagged the miss. On 98 comments that models
+    wrote in the arena, it showed two states our option set lacks. The first waiver we
+    saw a model write graded 3 of 4, because it honestly recorded no owner.
+  publish: true
+
+- file: 2026-09-21-jev-system-one.md
+  date: 2026-09-21
+  tags: [research]
+  chips: ["1 classifier", "3 integrations", "234 live calls"]
+  title: "How does Jev boost our OTC trading agent?"
+  blurb: >
+    TypeSafe's Jev is a classifier that cannot write a word or call a tool. We put it in
+    three places on the desk and made 234 live calls. Under the wording we shipped, the AUTO
+    guard flagged all 30 trap calls we ran and was reached from inside a real persona turn;
+    every false alarm traced to how we worded the question, and a post-hoc rewording -- not
+    shipped -- cleared nine of nine held-out controls. It moves no arena score, by design.
+  publish: true
+
+- file: 2026-09-03-run134-gemini38-flash.md
+  date: 2026-09-03
+  tags: [research]
+  run: "Run #134"
+  chips: ["1 model", "6 workflows", "2 efforts", "corrected"]
+  title: "The newer Gemini looked like a regression. We had it on the wrong effort."
+  blurb: >
+    Gemini 3.8 Flash wins four of five workflows on correctness and still finishes behind
+    the model it replaces, spending five times as much on filesystem searching at an
+    identical hit rate. Two controls then take the finding apart: one fifth of the gap was
+    a change we made to the harness, and the rest is reasoning effort. Re-run at `low`
+    across all six workflows it spends 53% fewer calls, gives up 1.8 objective points, and
+    its overall rating rises from 79 to 86 -- a better card than the model it was supposed
+    to have regressed from.
+  publish: true
+
+- file: 2026-08-30-run133-confirmation-desk-day.md
+  date: 2026-08-30
+  tags: [board]
+  run: "Run #133"
+  chips: ["4 models", "8 trials", "vision"]
+  title: "The first vision board: the traps are solved, the desk is not"
+  blurb: >
+    Four multimodal models work a morning's counterparty confirmations. Every designed
+    vision trap but one is read perfectly by the whole field, the checks that still
+    separate it measure substitution and an extraction pipeline -- and one contestant's
+    podium position turns out to be built on reading other contestants' answers through
+    two unscoped stores, found, fixed, and re-scored nine points lower.
+  publish: true
+
+- file: 2026-08-28-run131-flash-newcomers.md
+  date: 2026-08-28
+  tags: [research]
+  title: "Two new flash models post the best correctness on the board, and lose"
+  blurb: >
+    GLM 5.3 Flash and Qwen 3.8 Flash tie or beat the field on correctness across five
+    workflows and place sixth and seventh of nine. Five of their ten cells score EFF
+    zero: the right answer, by a road two to three times too long.
+  chips: ["2 models", "run #131", "10 trials"]
+  publish: true
+
+- file: 2026-08-26-run129-flash-tier-board.md
+  date: 2026-08-27
+  tags: [research]
+  title: "The flash tier, re-measured — and then re-run at `low`"
+  blurb: >
+    Seven models, five workflows, two efforts, 140 trials on a repaired harness.
+    At each model's ceiling the most correct agent finishes third; pinned to
+    `low` the board reorders and `low` costs most of the field under a point.
+  chips: ["7 models", "runs #129-#130", "140 trials"]
+  publish: true
+
+- file: 2026-08-21-glm-artifact-tool-study.md
+  date: 2026-08-21
+  tags: [research]
+  title: "Does GLM really perform badly at artifact-writing tools?"
+  blurb: >
+    It looked like the worst model in the field at writing a report. It was a
+    4096-token ceiling nobody set, and a truncated turn reports `success`. Budget
+    0/8 vs 7/8 on the same two models.
+  chips: ["2 models", "runs #118-#119", "16 trials"]
+  publish: true
+
+- file: 2026-08-20-glm-artifact-tool-study-design.md
+  date: 2026-08-20
+  tags: [method]
+  title: "Pre-registration: the GLM artifact-tool budget study"
+  blurb: >
+    Arms, scorer and the three pass criteria for Runs #118 and #119, published as
+    they were predeclared before either arm launched.
+  publish: true
+
+- file: 2026-08-18-run110-luna-reasoning-effort.md
+  date: 2026-08-18
+  tags: [research]
+  title: "Does reasoning_effort improve agent performance?"
+  blurb: >
+    Effort is a step at `low`, not a dial. Zero to some reasoning buys ~5 points
+    and costs less; above `low`, quality is flat while wall-clock triples.
+  chips: ["1 model", "4 efforts", "40 trials"]
+  publish: true
+
+- file: 2026-08-17-trap-step-absent-referent.md
+  date: 2026-08-17
+  tags: [research]
+  title: "Do models fail the trap step? Yes, but not the way we thought"
+  blurb: >
+    Prohibitions hold at 94-100% when nothing pushes against them, and collapse
+    to 5% when the requested act IS the banned one. Trap failure is completion
+    pressure, not weak instruction-following.
+  chips: ["runs #10-#109", "99 trials"]
+  publish: true
+
+- file: 2026-08-17-luna-reasoning-effort-plan.md
+  date: 2026-08-17
+  tags: [method]
+  title: "Pre-registration: the reasoning-effort ladder study"
+  blurb: >
+    The design, arms, and validity rules for Run #110, published as they were
+    predeclared before launch.
+  publish: true
+
+- file: 2026-08-13-run104-otc-desk-agent-arena.md
+  date: 2026-08-13
+  tags: [board]
+  run: "Run #104"
+  chips: ["2 models", "4 workflows", "2 trials"]
+  title: "Grok 4.6 edges DeepSeek V4 Pro, for opposite reasons"
+  blurb: >
+    A one-point tie: Grok leads the objective axis 96.3 to 90.9 and wins three of
+    four workflows, but posts EFF 12 at 243 tool calls against par 24. The
+    inversion is not fixed, it is deeper.
+  standings:
+    - {rank: 1, model: "Grok 4.6", score: 80, note: "objective 96.3, EFF 12"}
+    - {rank: 2, model: "DeepSeek V4 Pro", score: 79, note: "100.0 objective in 22 calls"}
+  assets: [cards/run104]
+  publish: true
+
+- file: 2026-07-29-run94-otc-desk-agent-arena.md
+  date: 2026-07-29
+  tags: [board]
+  run: "Run #94"
+  chips: ["18 models"]
+  title: "Board governance review: the ranking signal migrates"
+  blurb: >
+    Gemini 3.6 Flash posts the Arena's first perfect card while the governance
+    workflow moves the deciding signal from efficiency to synthesis.
+  publish: true
+
+- file: 2026-07-20-run33-otc-desk-agent-arena.md
+  date: 2026-07-20
+  tags: [board]
+  run: "Run #33"
+  chips: ["17 models", "2 trials"]
+  title: "Trader RFQ booking day: operator rankings replicate"
+  blurb: >
+    GPT-5.6 Terra defends its title on a second workflow. Objective capability
+    saturates again, so efficiency and consistency decide the operator ranking.
+  publish: true
+
+- file: 2026-07-13-run20-otc-desk-agent-arena.md
+  date: 2026-07-13
+  tags: [board]
+  run: "Run #20"
+  chips: ["16 models", "2 trials"]
+  title: "Model Ability Cards: measuring the long-run operator"
+  blurb: >
+    A nine-step, 39-point task separates raw capability from the efficiency and
+    consistency that determine whether an agent can be left to run unattended.
+  publish: true
+
+- file: 2026-06-28-run9-otc-desk-agent-arena.md
+  date: 2026-06-28
+  tags: [board]
+  run: "Run #9"
+  chips: ["9 flash models", "5 trials"]
+  title: "The flash tier: latency is not a price claim"
+  blurb: >
+    Gemini 3.5 Flash wins the placed board at $14.28 a match, dearer than the
+    frontier models. Step 3.7 Flash lands 0.1 behind and costs 14x less.
+  publish: true
+
+- file: 2026-06-27-run8-otc-desk-agent-arena.md
+  date: 2026-06-27
+  tags: [board]
+  run: "Run #8"
+  chips: ["10 models", "5 trials"]
+  title: "Risk manager control day: the first frontier board"
+  blurb: >
+    Claude Opus 4.8 and GPT-5.5 finish in a statistical tie at the top, and the
+    cost-efficiency ranking inverts the quality ranking outright.
+  publish: true
