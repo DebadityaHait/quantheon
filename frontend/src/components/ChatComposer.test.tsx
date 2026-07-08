@@ -1,0 +1,641 @@
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { ChatComposer } from './ChatComposer';
+import type { DeskWorkflowSummary } from '../types';
+
+describe('ChatComposer', () => {
+  it('sends /compact without requiring an argument or launching a workflow', async () => {
+    const onSend = vi.fn();
+    const onLaunchWorkflow = vi.fn();
+    render(<ChatComposer onSend={onSend} sending={false} onLaunchWorkflow={onLaunchWorkflow} />);
+    await userEvent.type(screen.getByLabelText(/ask anything/i), '/compact');
+    await userEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(onSend).toHaveBeenCalledWith('/compact', undefined);
+    expect(onLaunchWorkflow).not.toHaveBeenCalled();
+  });
+  it('renders textarea and send button', () => {
+    render(<ChatComposer onSend={() => {}} sending={false} />);
+    expect(screen.getByLabelText(/ask anything/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /send/i })).toBeInTheDocument();
+  });
+
+  it('calls onSend with current text', async () => {
+    const onSend = vi.fn();
+    render(<ChatComposer onSend={onSend} sending={false} />);
+    await userEvent.type(screen.getByLabelText(/ask anything/i), 'price snowball');
+    await userEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(onSend).toHaveBeenCalledWith('price snowball', undefined);
+  });
+
+  it('clears input after send', async () => {
+    render(<ChatComposer onSend={() => {}} sending={false} />);
+    const textarea = screen.getByLabelText(/ask anything/i) as HTMLTextAreaElement;
+    await userEvent.type(textarea, 'hello');
+    await userEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(textarea.value).toBe('');
+  });
+
+  it('sends on Enter', async () => {
+    const onSend = vi.fn();
+    render(<ChatComposer onSend={onSend} sending={false} />);
+    const textarea = screen.getByLabelText(/ask anything/i);
+    await userEvent.type(textarea, 'price snowball');
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('price snowball', undefined);
+  });
+
+  it('inserts a newline instead of sending on Shift+Enter', async () => {
+    const onSend = vi.fn();
+    render(<ChatComposer onSend={onSend} sending={false} />);
+    const textarea = screen.getByLabelText(/ask anything/i);
+    await userEvent.type(textarea, 'line one');
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('does not send on Enter while an IME composition is active', async () => {
+    const onSend = vi.fn();
+    render(<ChatComposer onSend={onSend} sending={false} />);
+    const textarea = screen.getByLabelText(/ask anything/i);
+    await userEvent.type(textarea, '雪球');
+    // While composing CJK input, Enter confirms a candidate and must not send.
+    fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('does not send on Enter when sending is already in flight', async () => {
+    const onSend = vi.fn();
+    render(<ChatComposer onSend={onSend} sending />);
+    const textarea = screen.getByLabelText(/ask anything/i);
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('disables send when sending=true', () => {
+    render(<ChatComposer onSend={() => {}} sending />);
+    expect(screen.getByRole('button', { name: /send/i })).toBeDisabled();
+  });
+
+  it('does not call onSend when text is empty', async () => {
+    const onSend = vi.fn();
+    render(<ChatComposer onSend={onSend} sending={false} />);
+    await userEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('shows Streaming… when streaming prop is true', () => {
+    render(<ChatComposer onSend={() => {}} sending streaming />);
+    expect(screen.getByRole('button', { name: /streaming/i })).toBeInTheDocument();
+  });
+
+  it('shows a stop button while streaming when stop handler is provided', async () => {
+    const onStopStreaming = vi.fn();
+    render(<ChatComposer onSend={() => {}} sending streaming onStopStreaming={onStopStreaming} />);
+
+    await userEvent.click(screen.getByRole('button', { name: /stop/i }));
+
+    expect(onStopStreaming).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders the execution mode picker with AUTO active by default', () => {
+    render(
+      <ChatComposer
+        onSend={() => {}}
+        sending={false}
+        onChangeMode={() => {}}
+      />,
+    );
+
+    const modeSelect = screen.getByLabelText('Mode') as HTMLSelectElement;
+    expect(modeSelect).toBeInTheDocument();
+    expect(modeSelect).toHaveValue('auto');
+  });
+
+  it('marks the supplied executionMode as selected', () => {
+    render(
+      <ChatComposer
+        onSend={() => {}}
+        sending={false}
+        executionMode="yolo"
+        onChangeMode={() => {}}
+      />,
+    );
+
+    expect(screen.getByLabelText('Mode')).toHaveValue('yolo');
+  });
+
+  it('calls onChangeMode with the selected mode', async () => {
+    const onChangeMode = vi.fn();
+    render(
+      <ChatComposer
+        onSend={() => {}}
+        sending={false}
+        executionMode="auto"
+        onChangeMode={onChangeMode}
+      />,
+    );
+
+    await userEvent.selectOptions(screen.getByLabelText('Mode'), 'interactive');
+    expect(onChangeMode).toHaveBeenCalledWith('interactive');
+
+    await userEvent.selectOptions(screen.getByLabelText('Mode'), 'yolo');
+    expect(onChangeMode).toHaveBeenCalledWith('yolo');
+  });
+
+  it('renders the effort picker defaulting to "default" (not a level)', () => {
+    render(
+      <ChatComposer
+        onSend={() => {}}
+        sending={false}
+        onChangeReasoningEffort={() => {}}
+      />,
+    );
+
+    // "Default" must be the resting state: it sends NO reasoning_effort, so the
+    // vendor default applies exactly as it did before this control existed.
+    expect(screen.getByLabelText('Effort')).toHaveValue('default');
+  });
+
+  it('calls onChangeReasoningEffort with the selected level', async () => {
+    const onChangeReasoningEffort = vi.fn();
+    render(
+      <ChatComposer
+        onSend={() => {}}
+        sending={false}
+        reasoningEffort="default"
+        onChangeReasoningEffort={onChangeReasoningEffort}
+      />,
+    );
+
+    await userEvent.selectOptions(screen.getByLabelText('Effort'), 'high');
+    expect(onChangeReasoningEffort).toHaveBeenCalledWith('high');
+  });
+
+  it('omits the effort picker entirely when no handler is supplied', () => {
+    render(<ChatComposer onSend={() => {}} sending={false} onChangeMode={() => {}} />);
+
+    expect(screen.queryByLabelText('Effort')).toBeNull();
+    expect(screen.getByLabelText('Mode')).toBeInTheDocument();
+  });
+
+  it('offers only the effort levels the selected model declares', () => {
+    // There is no universal ladder: GLM-5.2 really does accept only high/max.
+    // Offering `low` here would fail server-side at send time instead of at pick
+    // time, which is strictly worse for the operator.
+    render(
+      <ChatComposer
+        onSend={() => {}}
+        sending={false}
+        channels={[{
+          name: 'zenmux', label: 'ZenMux', type: 'zenmux', healthy: true,
+          models: [{
+            channel: 'zenmux', provider: 'openai', model: 'z-ai/glm-5.2',
+            label: 'GLM 5.2', reasoning_efforts: ['high', 'max'],
+          }],
+        }]}
+        selectedModel={{ channel: 'zenmux', provider: 'openai', model: 'z-ai/glm-5.2' }}
+        onChangeModel={() => {}}
+        onChangeReasoningEffort={() => {}}
+      />,
+    );
+
+    const values = Array.from(
+      (screen.getByLabelText('Effort') as HTMLSelectElement).options,
+    ).map((o) => o.value);
+    expect(values).toEqual(['default', 'high', 'max']);
+  });
+
+  it('offers only Default (and disables) for a model with no effort ladder', () => {
+    // Qwen3.7 / MiniMax M3 expose reasoning as a bare on/off toggle, and an
+    // anthropic-protocol model's client cannot carry an effort at all.
+    render(
+      <ChatComposer
+        onSend={() => {}}
+        sending={false}
+        channels={[{
+          name: 'zenmux', label: 'ZenMux', type: 'zenmux', healthy: true,
+          models: [{
+            channel: 'zenmux', provider: 'openai', model: 'qwen/qwen3.7-max',
+            label: 'Qwen3.7 Max', reasoning_efforts: [],
+          }],
+        }]}
+        selectedModel={{ channel: 'zenmux', provider: 'openai', model: 'qwen/qwen3.7-max' }}
+        onChangeModel={() => {}}
+        onChangeReasoningEffort={() => {}}
+      />,
+    );
+
+    const select = screen.getByLabelText('Effort') as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(['default']);
+    expect(select).toBeDisabled();
+  });
+
+  it('shows Default instead of a stale pick the new model cannot honour', () => {
+    // Switching models must not leave a level selected that the server rejects.
+    render(
+      <ChatComposer
+        onSend={() => {}}
+        sending={false}
+        channels={[{
+          name: 'zenmux', label: 'ZenMux', type: 'zenmux', healthy: true,
+          models: [{
+            channel: 'zenmux', provider: 'openai', model: 'z-ai/glm-5.2',
+            label: 'GLM 5.2', reasoning_efforts: ['high', 'max'],
+          }],
+        }]}
+        selectedModel={{ channel: 'zenmux', provider: 'openai', model: 'z-ai/glm-5.2' }}
+        reasoningEffort="low"
+        onChangeModel={() => {}}
+        onChangeReasoningEffort={() => {}}
+      />,
+    );
+
+    expect(screen.getByLabelText('Effort')).toHaveValue('default');
+  });
+
+  it('falls back to the full ladder when the model is unknown to the snapshot', () => {
+    // models.dev lags new releases, so a model with no declared ladder must keep
+    // every level available rather than lose the control entirely.
+    render(
+      <ChatComposer
+        onSend={() => {}}
+        sending={false}
+        channels={[{
+          name: 'zenmux', label: 'ZenMux', type: 'zenmux', healthy: true,
+          models: [{
+            channel: 'zenmux', provider: 'openai', model: 'x-ai/grok-4.6',
+            label: 'Grok 4.6',
+          }],
+        }]}
+        selectedModel={{ channel: 'zenmux', provider: 'openai', model: 'x-ai/grok-4.6' }}
+        onChangeModel={() => {}}
+        onChangeReasoningEffort={() => {}}
+      />,
+    );
+
+    const values = Array.from(
+      (screen.getByLabelText('Effort') as HTMLSelectElement).options,
+    ).map((o) => o.value);
+    expect(values).toContain('xhigh');
+    expect(values).toContain('max');
+  });
+
+  it('shows no effort levels for a model dispatched over the anthropic protocol', () => {
+    // glm-5.2 / minimax-m3 / qwen3.7-max / longcat-2.0 are NOT Claude models, but
+    // our config routes them with protocol: anthropic, and ChatAnthropic cannot
+    // carry a reasoning_effort — so the server reports [] and the picker must too.
+    render(
+      <ChatComposer
+        onSend={() => {}}
+        sending={false}
+        channels={[{
+          name: 'zenmux', label: 'ZenMux', type: 'zenmux', healthy: true,
+          models: [{
+            channel: 'zenmux', provider: 'openai', model: 'z-ai/glm-5.2',
+            label: 'GLM 5.2', reasoning_efforts: [],
+          }],
+        }]}
+        selectedModel={{ channel: 'zenmux', provider: 'openai', model: 'z-ai/glm-5.2' }}
+        reasoningEffort="high"
+        onChangeModel={() => {}}
+        onChangeReasoningEffort={() => {}}
+      />,
+    );
+
+    const select = screen.getByLabelText('Effort') as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(['default']);
+    // A level carried over from the previous model must not remain displayed.
+    expect(select).toHaveValue('default');
+  });
+
+  it('disables the mode picker while streaming', () => {
+    render(
+      <ChatComposer
+        onSend={() => {}}
+        sending
+        streaming
+        executionMode="yolo"
+        onChangeMode={() => {}}
+      />,
+    );
+
+    expect(screen.getByLabelText('Mode')).toBeDisabled();
+  });
+
+  it('does not render the view mode picker when viewMode props are absent', () => {
+    render(<ChatComposer onSend={() => {}} sending={false} />);
+    expect(screen.queryByLabelText('Detail')).not.toBeInTheDocument();
+  });
+
+  it('renders the view mode picker when props are provided', () => {
+    render(
+      <ChatComposer
+        onSend={() => {}}
+        sending={false}
+        viewMode="detailed"
+        onChangeViewMode={() => {}}
+      />,
+    );
+    expect(screen.getByLabelText('Detail')).toHaveValue('detailed');
+  });
+
+  it('calls onChangeViewMode from the picker', async () => {
+    const onChangeViewMode = vi.fn();
+    render(
+      <ChatComposer
+        onSend={() => {}}
+        sending={false}
+        viewMode="compact"
+        onChangeViewMode={onChangeViewMode}
+      />,
+    );
+    await userEvent.selectOptions(screen.getByLabelText('Detail'), 'detailed');
+    expect(onChangeViewMode).toHaveBeenCalledWith('detailed');
+  });
+
+  describe('slash-command discovery', () => {
+    it('surfaces the built-in /goal command when typing a slash (no workflows needed)', async () => {
+      render(<ChatComposer onSend={() => {}} sending={false} />);
+      await userEvent.type(screen.getByLabelText(/ask anything/i), '/');
+      expect(screen.getByRole('option', { name: /\/goal/ })).toBeInTheDocument();
+    });
+
+    it('matches /goal by prefix as you type', async () => {
+      render(<ChatComposer onSend={() => {}} sending={false} />);
+      await userEvent.type(screen.getByLabelText(/ask anything/i), '/go');
+      expect(screen.getByRole('option', { name: /\/goal/ })).toBeInTheDocument();
+    });
+
+    it('clicking the /goal option fills the composer with "/goal " instead of sending', async () => {
+      const onSend = vi.fn();
+      render(<ChatComposer onSend={onSend} sending={false} />);
+      const box = screen.getByLabelText(/ask anything/i) as HTMLTextAreaElement;
+      await userEvent.type(box, '/goal');
+      await userEvent.click(screen.getByRole('option', { name: /\/goal/ }));
+      expect(box.value).toBe('/goal ');
+      expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it('pressing Enter on a bare /goal prompts for the description rather than sending', async () => {
+      const onSend = vi.fn();
+      render(<ChatComposer onSend={onSend} sending={false} />);
+      const box = screen.getByLabelText(/ask anything/i) as HTMLTextAreaElement;
+      await userEvent.type(box, '/goal{Enter}');
+      expect(onSend).not.toHaveBeenCalled();
+      expect(box.value).toBe('/goal ');
+    });
+
+    it('sends a fully-typed /goal command through onSend', async () => {
+      const onSend = vi.fn();
+      render(<ChatComposer onSend={onSend} sending={false} />);
+      await userEvent.type(screen.getByLabelText(/ask anything/i), '/goal refresh risk{Enter}');
+      expect(onSend).toHaveBeenCalledWith('/goal refresh risk', undefined);
+    });
+  });
+
+  describe('slash-command keyboard navigation', () => {
+    const workflow = {
+      slug: 'run-risk',
+      title: 'Run risk',
+      persona: 'risk_manager' as const,
+      description: '',
+      scope: 'local' as const,
+      default_mode: 'auto' as const,
+      source: 'seed' as const,
+    };
+
+    it('highlights the first option by default when the menu opens', async () => {
+      render(
+        <ChatComposer
+          onSend={() => {}}
+          sending={false}
+          workflows={[workflow]}
+          onLaunchWorkflow={() => {}}
+        />,
+      );
+      await userEvent.type(screen.getByLabelText(/ask anything/i), '/');
+      expect(screen.getByRole('option', { name: /\/goal/ })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByRole('option', { name: /\/run-risk/ })).toHaveAttribute('aria-selected', 'false');
+    });
+
+    it('moves the highlight down with ArrowDown', async () => {
+      render(
+        <ChatComposer
+          onSend={() => {}}
+          sending={false}
+          workflows={[workflow]}
+          onLaunchWorkflow={() => {}}
+        />,
+      );
+      const box = screen.getByLabelText(/ask anything/i);
+      await userEvent.type(box, '/');
+      fireEvent.keyDown(box, { key: 'ArrowDown' });
+      fireEvent.keyDown(box, { key: 'ArrowDown' });
+      expect(screen.getByRole('option', { name: /\/run-risk/ })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByRole('option', { name: /\/goal/ })).toHaveAttribute('aria-selected', 'false');
+    });
+
+    it('wraps the highlight to the last option with ArrowUp from the top', async () => {
+      render(
+        <ChatComposer
+          onSend={() => {}}
+          sending={false}
+          workflows={[workflow]}
+          onLaunchWorkflow={() => {}}
+        />,
+      );
+      const box = screen.getByLabelText(/ask anything/i);
+      await userEvent.type(box, '/');
+      fireEvent.keyDown(box, { key: 'ArrowUp' });
+      expect(screen.getByRole('option', { name: /\/run-risk/ })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    it('Enter selects the highlighted option, not the first one', async () => {
+      const onLaunchWorkflow = vi.fn();
+      const box = renderAndOpen(onLaunchWorkflow, workflow);
+      fireEvent.keyDown(box, { key: 'ArrowDown' });
+      fireEvent.keyDown(box, { key: 'ArrowDown' });
+      fireEvent.keyDown(box, { key: 'Enter' });
+      expect(onLaunchWorkflow).toHaveBeenCalledWith('run-risk', 'auto');
+    });
+
+    it('Tab autocompletes the highlighted slug without launching it', async () => {
+      const onLaunchWorkflow = vi.fn();
+      const box = renderAndOpen(onLaunchWorkflow, workflow) as HTMLTextAreaElement;
+      fireEvent.keyDown(box, { key: 'ArrowDown' });
+      fireEvent.keyDown(box, { key: 'ArrowDown' });
+      fireEvent.keyDown(box, { key: 'Tab' });
+      expect(box.value).toBe('/run-risk');
+      expect(onLaunchWorkflow).not.toHaveBeenCalled();
+    });
+
+    function renderAndOpen(
+      onLaunchWorkflow: (slug: string, mode: 'auto' | 'yolo') => void,
+      wf: typeof workflow,
+    ) {
+      render(
+        <ChatComposer
+          onSend={() => {}}
+          sending={false}
+          workflows={[wf]}
+          onLaunchWorkflow={onLaunchWorkflow}
+        />,
+      );
+      const box = screen.getByLabelText(/ask anything/i);
+      fireEvent.change(box, { target: { value: '/' } });
+      return box;
+    }
+  });
+
+  describe('command-token highlighting in the input', () => {
+    const workflow = {
+      slug: 'run-risk',
+      title: 'Run risk',
+      persona: 'risk_manager' as const,
+      description: '',
+      scope: 'local' as const,
+      default_mode: 'auto' as const,
+      source: 'seed' as const,
+    };
+
+    it('wraps a leading built-in command in a highlighted token, even with trailing args', () => {
+      const { container } = render(<ChatComposer onSend={() => {}} sending={false} />);
+      fireEvent.change(screen.getByLabelText(/ask anything/i), {
+        target: { value: '/goal create a risk report for portfolio "Default"' },
+      });
+      const token = container.querySelector('.wl-composer__cmd-token');
+      expect(token?.textContent).toBe('/goal');
+    });
+
+    it('highlights a recognized workflow slug typed into the input', () => {
+      const { container } = render(
+        <ChatComposer
+          onSend={() => {}}
+          sending={false}
+          workflows={[workflow]}
+          onLaunchWorkflow={() => {}}
+        />,
+      );
+      fireEvent.change(screen.getByLabelText(/ask anything/i), { target: { value: '/run-risk' } });
+      expect(container.querySelector('.wl-composer__cmd-token')?.textContent).toBe('/run-risk');
+    });
+
+    it('does not highlight ordinary prose or an unrecognized slash token', () => {
+      const { container } = render(<ChatComposer onSend={() => {}} sending={false} />);
+      const box = screen.getByLabelText(/ask anything/i);
+      fireEvent.change(box, { target: { value: 'price a snowball' } });
+      expect(container.querySelector('.wl-composer__cmd-token')).toBeNull();
+      fireEvent.change(box, { target: { value: '/notacommand do things' } });
+      expect(container.querySelector('.wl-composer__cmd-token')).toBeNull();
+    });
+  });
+
+  const _wfBase: Omit<DeskWorkflowSummary, 'slug' | 'params'> = {
+    title: 'T', persona: 'trader', description: '', scope: 'local',
+    default_mode: 'auto', source: 'user',
+  };
+  const plainWf: DeskWorkflowSummary = { ..._wfBase, slug: 'plain' };
+  const paramWf: DeskWorkflowSummary = {
+    ..._wfBase, slug: 'needs', params: [{ name: 'p', label: 'P', type: 'string' }],
+  };
+
+  it('requests params (not launch) for a parameterized workflow', () => {
+    const onLaunch = vi.fn();
+    const onRequestParams = vi.fn();
+    render(
+      <ChatComposer
+        onSend={() => {}} sending={false}
+        workflows={[paramWf]} onLaunchWorkflow={onLaunch} onRequestParams={onRequestParams}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText('Ask anything'), { target: { value: '/needs' } });
+    fireEvent.click(screen.getByRole('option', { name: /\/needs/ }));
+    expect(onRequestParams).toHaveBeenCalledWith(paramWf);
+    expect(onLaunch).not.toHaveBeenCalled();
+  });
+
+  it('launches a zero-param workflow directly', () => {
+    const onLaunch = vi.fn();
+    const onRequestParams = vi.fn();
+    render(
+      <ChatComposer
+        onSend={() => {}} sending={false}
+        workflows={[plainWf]} onLaunchWorkflow={onLaunch} onRequestParams={onRequestParams}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText('Ask anything'), { target: { value: '/plain' } });
+    fireEvent.click(screen.getByRole('option', { name: /\/plain/ }));
+    expect(onLaunch).toHaveBeenCalledWith('plain', 'auto');
+    expect(onRequestParams).not.toHaveBeenCalled();
+  });
+});
+
+describe('ChatComposer attachments', () => {
+  const pdf = () => new File(['%PDF-1.4'], 'confirm.pdf', { type: 'application/pdf' });
+  const docx = () => new File(['zip'], 'termsheet.docx', {
+    type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  });
+
+  const fileInput = () => screen.getByTestId('composer-file-input') as HTMLInputElement;
+
+  it('shows a chip per attached file', () => {
+    render(<ChatComposer onSend={() => {}} sending={false} />);
+    fireEvent.change(fileInput(), { target: { files: [pdf(), docx()] } });
+    expect(screen.getByText('confirm.pdf')).toBeInTheDocument();
+    expect(screen.getByText('termsheet.docx')).toBeInTheDocument();
+  });
+
+  it('removing one chip leaves the other attached', () => {
+    render(<ChatComposer onSend={() => {}} sending={false} />);
+    fireEvent.change(fileInput(), { target: { files: [pdf(), docx()] } });
+    // Chip renders its remove control with aria-label "Remove"; the first chip is the pdf.
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0]);
+    expect(screen.queryByText('confirm.pdf')).not.toBeInTheDocument();
+    expect(screen.getByText('termsheet.docx')).toBeInTheDocument();
+  });
+
+  it('filters unsupported types in code and explains what it skipped', () => {
+    render(<ChatComposer onSend={() => {}} sending={false} />);
+    const txt = new File(['notes'], 'notes.txt', { type: 'text/plain' });
+    fireEvent.change(fileInput(), { target: { files: [pdf(), txt] } });
+    expect(screen.getByText('confirm.pdf')).toBeInTheDocument();
+    expect(screen.queryByText('notes.txt')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(/only \.pdf \/ \.docx/i);
+  });
+
+  it('drops a duplicate re-pick of the same file', () => {
+    render(<ChatComposer onSend={() => {}} sending={false} />);
+    fireEvent.change(fileInput(), { target: { files: [pdf()] } });
+    fireEvent.change(fileInput(), { target: { files: [pdf()] } });
+    expect(screen.getAllByText('confirm.pdf')).toHaveLength(1);
+  });
+
+  it('sends attachments with the message and clears them afterwards', () => {
+    const onSend = vi.fn();
+    render(<ChatComposer onSend={onSend} sending={false} />);
+    fireEvent.change(screen.getByLabelText('Ask anything'), { target: { value: 'book this' } });
+    fireEvent.change(fileInput(), { target: { files: [pdf()] } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+
+    expect(onSend).toHaveBeenCalledTimes(1);
+    const [message, attachments] = onSend.mock.calls[0];
+    expect(message).toBe('book this');
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0].name).toBe('confirm.pdf');
+    expect(screen.queryByText('confirm.pdf')).not.toBeInTheDocument();
+  });
+
+  it('allows sending an attachment with no text', () => {
+    const onSend = vi.fn();
+    render(<ChatComposer onSend={onSend} sending={false} />);
+    const send = screen.getByRole('button', { name: /send/i });
+    expect(send).toBeDisabled();
+    fireEvent.change(fileInput(), { target: { files: [pdf()] } });
+    expect(send).not.toBeDisabled();
+    fireEvent.click(send);
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend.mock.calls[0][0]).toBe('');
+    expect(onSend.mock.calls[0][1]).toHaveLength(1);
+  });
+});
