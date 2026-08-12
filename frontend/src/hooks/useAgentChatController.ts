@@ -1,0 +1,1373 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { api } from '../api/client';
+import type {
+  AgentChannel,
+  AgentContextUsage,
+  AgentExecutionMode,
+  AgentModelConfig,
+  AgentModelSelection,
+  AgentReasoningEffortChoice,
+  AgentTodoItem,
+  AsyncAgentTask,
+  ChatMessage as ChatMessageType,
+  Envelope,
+  PageContext,
+  TaskRun,
+  Thread,
+  ToolEvent,
+} from '../types';
+import { useViewMode, type ViewMode } from './useViewMode';
+import {
+  parseGoalCommand,
+  startGoal,
+  ratifyGoal as ratifyGoalApi,
+  cancelGoal as cancelGoalApi,
+  getGoal,
+  getGoalContract,
+  isClarification,
+  type GoalContract,
+  type GoalRunState,
+  type GoalClarification,
+} from '../lib/goalApi';
+
+type CostPreview = { tool_name: string; estimated_seconds: number };
+type EnvelopeTransition = {
+  previous_envelope: Envelope;
+  new_envelope: Envelope;
+  reason: string;
+  denied_tool: string;
+};
+type Draft = {
+  content: string;
+  events: ToolEvent[];
+  todos?: AgentTodoItem[];
+  cost_preview?: CostPreview;
+  envelope_transition?: EnvelopeTransition;
+};
+const EXECUTION_MODE_STORAGE_KEY = 'open-otc:agent:execution-mode';
+const EXECUTION_MODES: readonly AgentExecutionMode[] = ['interactive', 'auto', 'yolo'];
+const REASONING_EFFORT_STORAGE_KEY = 'open-otc:agent:reasoning-effort';
+const REASONING_EFFORT_CHOICES: readonly AgentReasoningEffortChoice[] = [
+  'default', 'minimal', 'low', 'medium', 'high',
+];
+const ACTIVE_TASK_STATUSES = new Set(['queued', 'running']);
+
+export type AgentChatController = {
+  threads: Thread[];
+  activeThreadId: number | null;
+  activeThread: Thread | null;
+  loading: boolean;
+  sending: boolean;
+  streaming: boolean;
+  streamingItem: ChatMessageType | null;
+  error: string | null;
+  viewMode: ViewMode;
+  channels: AgentChannel[];
+  selectedModel: AgentModelSelection | null;
+  executionMode: AgentExecutionMode;
+  reasoningEffort: AgentReasoningEffortChoice;
+  confirmingActionIds: ReadonlySet<string>;
+  taskRunsById: Record<number, TaskRun>;
+  /** Whether arena threads are fetched at all — not merely filtered on screen. */
+  includeArena: boolean;
+  setIncludeArena: Dispatch<SetStateAction<boolean>>;
+  /** The typed search term. Debounced, then run server-side across all threads in scope. */
+  threadSearch: string;
+  setThreadSearch: Dispatch<SetStateAction<string>>;
+  /** Another page may exist; the list endpoint returns rows, not a total. */
+  moreThreadsAvailable: boolean;
+  loadMoreThreads: () => void;
+  setSelectedModel: (selection: AgentModelSelection) => void;
+  setExecutionMode: Dispatch<SetStateAction<AgentExecutionMode>>;
+  setReasoningEffort: Dispatch<SetStateAction<AgentReasoningEffortChoice>>;
+  setViewMode: (mode: ViewMode) => void;
+  selectThread: (id: number) => void;
+  createThread: () => Promise<void>;
+  renameThread: (threadId: number, title: string) => Promise<void>;
+  exportThread: (threadId: number) => Promise<void>;
+  deleteThread: (threadId: number) => Promise<void>;
+  forkThread: (threadId: number) => Promise<void>;
+  sendMessage: (
+    message: string,
+    pageContext?: PageContext | null,
+    accountingDate?: string | null,
+    contextUsage?: AgentContextUsage | null,
+    envelope?: Envelope,
+    confirmedCostPreview?: boolean,
+    attachments?: File[],
+  ) => Promise<void>;
+  /**
+   * Re-send the most recent user message in the active thread with
+   * confirmed_cost_preview=true. Used to approve a long-running tool
+   * after the cost-preview gate fired.
+   */
+  confirmCostPreview: (
+    pageContext?: PageContext | null,
+    accountingDate?: string | null,
+    contextUsage?: AgentContextUsage | null,
+    envelope?: Envelope,
+  ) => Promise<void>;
+  launchWorkflow: (slug: string, mode: 'auto' | 'yolo', args?: Record<string, string>) => Promise<void>;
+  stopStreaming: () => void;
+  confirmAction: (messageId: number, actionId: string) => Promise<void>;
+  dismissAction: (messageId: number, actionId: string) => Promise<void>;
+  refreshModels: () => Promise<void>;
+  // Goal mode (spec §G)
+  goalContract: GoalContract | null;
+  goalState: GoalRunState | null;
+  goalClarification: GoalClarification | null;
+  goalBusy: boolean;
+  ratifyActiveGoal: () => Promise<void>;
+  cancelActiveGoal: () => Promise<void>;
+};
+
+type AgentChatControllerOptions = {
+  /**
+   * Fired when a tool begins (SSE `tool_start`), with the tool name and the
+   * raw args the model passed. Lets an embedding surface (e.g. the workflow
+   * builder) capture a drafted script straight from the stream instead of
+   * polling the DB for the persisted row.
+   */
+  onToolStart?: (name: string, args: unknown) => void;
+  /**
+   * Tags threads this controller creates (default 'desk') and scopes
+   * auto-selection to threads of that source. The workflow builder passes
+   * 'workflow_builder' so its conversations stay isolated from desk threads
+   * and it never auto-selects an unrelated desk thread on mount.
+   */
+  threadSource?: string;
+};
+
+export function useAgentChatController(
+  options?: AgentChatControllerOptions,
+): AgentChatController {
+  const [threads, setThreads] = useState<Thread[]>([]);
+  const [activeId, setActiveId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const streaming = draft != null;
+  const [error, setError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useViewMode();
+  const [modelConfig, setModelConfig] = useState<AgentModelConfig | null>(null);
+  const [selectedModel, setSelectedModel] = useState<AgentModelSelection | null>(null);
+  const [executionMode, setExecutionMode] = useSessionString<AgentExecutionMode>(
+    EXECUTION_MODE_STORAGE_KEY,
+    'auto',
+    EXECUTION_MODES,
+  );
+  // Kept OUTSIDE selectedModel on purpose: the effort is a per-session operator
+  // preference, while selectedModel is a model identity compared for equality
+  // against modelConfig.active and fed to ModelPicker. Merged onto the wire
+  // payload at send time instead, so those comparisons stay clean.
+  const [reasoningEffort, setReasoningEffort] = useSessionString<AgentReasoningEffortChoice>(
+    REASONING_EFFORT_STORAGE_KEY,
+    'default',
+    REASONING_EFFORT_CHOICES,
+  );
+  const [confirmingActionIds, setConfirmingActionIds] = useState<Set<string>>(() => new Set());
+  const [taskRunsById, setTaskRunsById] = useState<Record<number, TaskRun>>({});
+  const [asyncAgentPollNonce, setAsyncAgentPollNonce] = useState(0);
+  // Arena boards mint one thread per match, so they dominate the thread table
+  // (671 of 719 rows, ~59.7 MB of messages, at time of writing). The desk hides
+  // them behind a toggle, so this drives the FETCH — not just a client-side
+  // filter — and the default-off path never pays for them.
+  const [includeArena, setIncludeArena] = useState(false);
+  // The list is paged so its cost stops scaling with history. `threadLimit`
+  // grows by a page on "Load more" and the window is re-fetched from offset 0,
+  // which keeps the 4s poll refreshing exactly what is on screen — an
+  // append-at-offset scheme would have the poll refresh only the first page.
+  const [threadLimit, setThreadLimit] = useState(THREAD_PAGE_SIZE);
+  const [moreThreadsAvailable, setMoreThreadsAvailable] = useState(false);
+  // Two values: what the user is typing, and the debounced term actually sent.
+  // Searching is a real query per keystroke otherwise.
+  const [threadSearchInput, setThreadSearchInput] = useState('');
+  const [threadSearch, setThreadSearch] = useState('');
+  const streamAbortRef = useRef<AbortController | null>(null);
+  // Read inside `refresh` without making it a dependency — `refresh` must keep a
+  // stable identity, since an effect re-runs the fetch whenever it changes.
+  // (`activeIdRef`, declared with the goal-mode state below, serves the same
+  // purpose for the active thread id.)
+  const threadsRef = useRef<Thread[]>([]);
+  // Keep the latest onToolStart in a ref so streaming closures never capture a
+  // stale callback between renders.
+  const onToolStartRef = useRef(options?.onToolStart);
+  onToolStartRef.current = options?.onToolStart;
+  threadsRef.current = threads;
+  const threadSource = options?.threadSource ?? 'desk';
+  // Goal mode (spec §G): the active thread's contract/run, plus a clarification ask
+  // when the framer needs more before it can draft checkable criteria.
+  const [goalContract, setGoalContract] = useState<GoalContract | null>(null);
+  const [goalState, setGoalState] = useState<GoalRunState | null>(null);
+  const [goalClarification, setGoalClarification] = useState<GoalClarification | null>(null);
+  const [goalBusy, setGoalBusy] = useState(false);
+  // Always reflects the committed active thread, so async goal updates can refuse to
+  // write a response for a thread the user has since switched away from.
+  const activeIdRef = useRef<number | null>(activeId);
+  activeIdRef.current = activeId;
+  // Whether the active thread has a running goal run — gates the post-stream refetch so
+  // a graded turn that transitions the run (satisfied / stuck) refreshes the card.
+  const goalRunningRef = useRef(false);
+  goalRunningRef.current = goalState?.status === 'running';
+
+  // Fetch and commit the goal run + contract for `threadId`, but only if it is still
+  // the active thread when each request resolves (guards every cross-thread race).
+  const reloadGoalFor = useCallback(async (threadId: number) => {
+    try {
+      const state = await getGoal(threadId);
+      if (activeIdRef.current !== threadId) return;
+      const contract = state ? await getGoalContract(threadId) : null;
+      if (activeIdRef.current !== threadId) return;
+      setGoalState(state);
+      setGoalContract(contract);
+      setGoalClarification(null);
+    } catch {
+      if (activeIdRef.current === threadId) {
+        setGoalContract(null);
+        setGoalState(null);
+      }
+    }
+  }, []);
+
+  const fetchCatalog = useCallback(async () => {
+    const cfg = await api<AgentModelConfig>('/api/agent/models');
+    setModelConfig(cfg);
+    setSelectedModel((current) => (
+      current && selectionExists(cfg, current) ? current : cfg.active
+    ));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchCatalog().catch((e) => {
+      if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchCatalog]);
+
+  const refreshModels = useCallback(async () => {
+    try {
+      await api('/api/agent/channels/reload', { method: 'POST' });
+      await fetchCatalog();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+  }, [fetchCatalog]);
+
+  /**
+   * Fetch the threads this controller should hold.
+   *
+   * The backend now accepts `?source=` to scope the list server-side
+   * (`GET /api/chat/threads?source=desk`). Omitting it returns EVERY public
+   * thread — every arena match included — which is the unbounded payload that
+   * exhausted the DB connection pool.
+   *
+   * Contract:
+   *  - always include this controller's own `threadSource` threads;
+   *  - additionally include `arena` threads when `includeArena` is true
+   *    (desk surface only — the builder never shows them);
+   *  - return them sorted updated_at-desc, because the caller below resumes
+   *    "the most recent same-source thread" by taking the first match.
+   *
+   * Scoped requests are merged rather than one unscoped request: the desk path
+   * then never pays for arena history, and the arena cost is paid only while
+   * the toggle is open — which matters because the async-task poll below
+   * re-runs this every 4s.
+   *
+   * `q` is sent to the server rather than filtered here, because the list is a
+   * page: filtering locally would only ever search the page already fetched.
+   */
+  const fetchThreadList = useCallback(async (): Promise<Thread[][]> => {
+    const term = threadSearch.trim();
+    return Promise.all(
+      threadListScopes(threadSource, includeArena).map((scope) => {
+        const params = new URLSearchParams({
+          source: scope,
+          limit: String(threadLimit),
+        });
+        if (term) params.set('q', term);
+        return api<Thread[]>(`/api/chat/threads?${params.toString()}`);
+      }),
+    );
+  }, [threadSource, includeArena, threadLimit, threadSearch]);
+
+  const refresh = useCallback(async () => {
+    const lists = await fetchThreadList();
+    setMoreThreadsAvailable(hasMoreThreads(lists, threadLimit));
+    const list = withActiveThreadPreserved(
+      mergeThreadLists(lists, threadLimit),
+      threadsRef.current,
+      activeIdRef.current,
+    );
+    setThreads(list);
+    setActiveId((current) => {
+      if (current != null && list.some((t) => t.id === current)) return current;
+      // Only auto-select threads owned by this controller's source. Keeps Agent
+      // Desk from landing on a hidden arena/builder thread, and the builder from
+      // landing on an unrelated desk thread. Missing source counts as 'desk'
+      // (backend default + legacy rows). `list` is updated_at-desc, so this
+      // resumes the most recent same-source thread.
+      return list.find((t) => (t.source ?? 'desk') === threadSource)?.id ?? null;
+    });
+  }, [fetchThreadList, threadLimit, threadSource]);
+
+  const loadMoreThreads = useCallback(() => {
+    setThreadLimit((current) => current + THREAD_PAGE_SIZE);
+  }, []);
+
+  // Debounce the typed term into the one that is actually queried.
+  useEffect(() => {
+    const timer = window.setTimeout(() => setThreadSearch(threadSearchInput), 250);
+    return () => window.clearTimeout(timer);
+  }, [threadSearchInput]);
+
+  // A new search (or a scope change) starts from page one — otherwise a window
+  // grown by "Load more" would silently make the next query far more expensive.
+  useEffect(() => {
+    setThreadLimit(THREAD_PAGE_SIZE);
+  }, [threadSearch, threadSource, includeArena]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        await refresh();
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refresh]);
+
+  useEffect(() => {
+    if (activeId == null || sending || streaming) return;
+    let cancelled = false;
+    let inFlight = false;
+    let hadActiveAsyncTask = false;
+    let intervalId: number | undefined;
+
+    const tick = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      try {
+        const rows = await api<AsyncAgentTask[]>(
+          `/api/chat/threads/${activeId}/async_agents`,
+        );
+        if (cancelled) return;
+        const hasActiveAsyncTask = Array.isArray(rows) && rows.length > 0;
+        if (hasActiveAsyncTask || hadActiveAsyncTask) {
+          hadActiveAsyncTask = hasActiveAsyncTask;
+          await refresh();
+        }
+        if (!hasActiveAsyncTask && intervalId !== undefined) {
+          window.clearInterval(intervalId);
+          intervalId = undefined;
+        }
+      } catch {
+        // Keep background polling quiet; normal sends and manual refresh paths
+        // still surface API failures.
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void tick();
+    intervalId = window.setInterval(() => {
+      void tick();
+    }, 4000);
+    return () => {
+      cancelled = true;
+      if (intervalId !== undefined) window.clearInterval(intervalId);
+    };
+  }, [activeId, asyncAgentPollNonce, refresh, sending, streaming]);
+
+  const watchedTaskIds = useMemo(
+    () => collectWatchedTaskIds(threads.find((thread) => thread.id === activeId) ?? null),
+    [threads, activeId],
+  );
+
+  useEffect(() => {
+    if (watchedTaskIds.length === 0) return;
+    let cancelled = false;
+    let inFlight = false;
+    let intervalId: number | undefined;
+
+    const load = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      try {
+        const rows = await Promise.all(
+          watchedTaskIds.map((taskId) => api<TaskRun>(`/api/tasks/${taskId}`)),
+        );
+        if (cancelled) return;
+        setTaskRunsById((prev) => {
+          const next = { ...prev };
+          for (const row of rows) next[row.id] = row;
+          return next;
+        });
+        const stillActive = rows.some((row) => ACTIVE_TASK_STATUSES.has(row.status));
+        if (!stillActive && intervalId !== undefined) {
+          window.clearInterval(intervalId);
+          intervalId = undefined;
+        }
+      } catch {
+        // Task progress is advisory UI chrome; chat stays usable if a poll
+        // races a cleanup or transient backend restart.
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void load();
+    intervalId = window.setInterval(() => {
+      void load();
+    }, 2500);
+    return () => {
+      cancelled = true;
+      if (intervalId !== undefined) window.clearInterval(intervalId);
+    };
+  }, [watchedTaskIds]);
+
+  const createThread = useCallback(async () => {
+    const created = await api<Thread>('/api/chat/threads', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'New research thread', character: 'trader', source: threadSource }),
+    });
+    setThreads((prev) => [created, ...prev]);
+    setActiveId(created.id);
+  }, [threadSource]);
+
+  const renameThread = useCallback(async (threadId: number, title: string) => {
+    setThreads((prev) => prev.map((thread) => (
+      thread.id === threadId ? { ...thread, title } : thread
+    )));
+    try {
+      const updated = await api<Thread>(`/api/chat/threads/${threadId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title }),
+      });
+      setThreads((prev) => prev.map((thread) => (
+        thread.id === threadId ? updated : thread
+      )));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      await refresh();
+    }
+  }, [refresh]);
+
+  const exportThread = useCallback(async (threadId: number) => {
+    try {
+      const exported = await api<Thread & { exported_at: string }>(
+        `/api/chat/threads/${threadId}/export`,
+      );
+      downloadJson(`agent-thread-${threadId}.json`, exported);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  const deleteThread = useCallback(async (threadId: number) => {
+    try {
+      await api<{ ok: boolean; deleted_id: number }>(`/api/chat/threads/${threadId}`, {
+        method: 'DELETE',
+      });
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [refresh]);
+
+  const forkThread = useCallback(async (threadId: number) => {
+    try {
+      const created = await api<Thread>(`/api/chat/threads/${threadId}/fork`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      setThreads((prev) => [created, ...prev]);
+      setActiveId(created.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  const sendMessage = useCallback(async (
+    message: string,
+    pageContext?: PageContext | null,
+    accountingDate?: string | null,
+    contextUsage?: AgentContextUsage | null,
+    envelope?: Envelope,
+    confirmedCostPreview?: boolean,
+    attachments?: File[],
+  ) => {
+    let threadId = activeId;
+    if (threadId == null) {
+      const created = await api<Thread>('/api/chat/threads', {
+        method: 'POST',
+        body: JSON.stringify({ title: 'New research thread', character: 'trader', source: threadSource }),
+      });
+      threadId = created.id;
+      setThreads((prev) => [created, ...prev]);
+      setActiveId(created.id);
+      activeIdRef.current = created.id;  // reflect the just-selected thread before any await
+    }
+
+    // Goal mode (spec §G): `/goal <description>` frames an acceptance contract instead
+    // of streaming a turn. The user ratifies it once (GoalRatifyCard) before the run.
+    const goalCommand = parseGoalCommand(message);
+    if (goalCommand) {
+      setError(null);
+      setGoalBusy(true);
+      try {
+        const result = await startGoal(threadId, goalCommand.goalText, executionMode);
+        if (activeIdRef.current !== threadId) return;  // user switched away mid-frame
+        if (isClarification(result)) {
+          setGoalClarification(result);
+          setGoalContract(null);
+          setGoalState(null);
+        } else {
+          const contract = await getGoalContract(threadId);
+          if (activeIdRef.current !== threadId) return;
+          setGoalClarification(null);
+          setGoalState(result);
+          setGoalContract(contract);
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setGoalBusy(false);
+      }
+      return;
+    }
+
+    setError(null);
+    setSending(true);
+    setDraft({ content: '', events: [] });
+    setThreads((prev) => prev.map((thread) => {
+      if (thread.id !== threadId) return thread;
+      return {
+        ...thread,
+        messages: [...thread.messages, {
+          id: -Date.now(),
+          role: 'user',
+          content: message,
+          meta: {
+            ...(contextUsage ? { context_usage: contextUsage } : {}),
+            ...(attachments && attachments.length > 0
+              // Optimistic echo only — the persisted row gets the server-minted refs
+              // (with stored path + sha256) once the turn commits.
+              ? { attachments: attachments.map((f) => ({ filename: f.name, path: '' })) }
+              : {}),
+            mode: executionMode,
+          },
+        }],
+      };
+    }));
+
+    let streamAbortController: AbortController | null = null;
+    try {
+      // Upload attachments BEFORE opening the stream: the turn body carries only stored
+      // paths, and the agent's parse_trade_confirmation tool refuses anything outside
+      // the server's uploads dir — so the bytes must already be on disk server-side.
+      // A failed upload aborts the turn (caught below) rather than sending a message
+      // that references files the agent cannot open.
+      let attachmentRefs: Array<{ path: string; filename: string; sha256?: string }> = [];
+      if (attachments && attachments.length > 0) {
+        attachmentRefs = await Promise.all(attachments.map(async (file) => {
+          const form = new FormData();
+          form.append('file', file);
+          const res = await fetch('/api/chat/uploads', { method: 'POST', body: form });
+          if (!res.ok) throw new Error(await res.text());
+          return res.json();
+        }));
+      }
+      // The effort actually sendable for this model: 'default' and any level the
+      // model does not list both resolve to "send nothing".
+      const modelLadder = selectedModel
+        ? (modelConfig?.channels ?? [])
+            .find((c) => c.name === selectedModel.channel)
+            ?.models.find(
+              (m) => m.model === selectedModel.model && m.provider === selectedModel.provider,
+            )?.reasoning_efforts
+        : undefined;
+      const effectiveEffort =
+        reasoningEffort !== 'default' &&
+        (modelLadder === undefined || modelLadder.includes(reasoningEffort))
+          ? reasoningEffort
+          : null;
+
+      streamAbortRef.current?.abort();
+      streamAbortController = new AbortController();
+      streamAbortRef.current = streamAbortController;
+      const response = await fetch(`/api/chat/threads/${threadId}/messages/stream`, {
+        method: 'POST',
+        signal: streamAbortController.signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: message,
+          character: 'auto',
+          // 'default' means "don't pin" — send no effort at all rather than a
+          // guessed level, so the vendor default applies exactly as it always did.
+          //
+          // Also drop a level the SELECTED model does not accept. The composer
+          // already hides such a level, but that is display only: this state
+          // survives a model switch, so without this a user who picked `high` and
+          // then switched to a model dispatched over the anthropic wire protocol
+          // (glm-5.2, minimax-m3, qwen3.7-max, longcat-2.0 — none of them Claude)
+          // would still send `high` and get a 422 mid-turn.
+          model: selectedModel && effectiveEffort
+            ? { ...selectedModel, reasoning_effort: effectiveEffort }
+            : selectedModel,
+          mode: executionMode,
+          page_context: pageContext ?? undefined,
+          context_usage: contextUsage ?? undefined,
+          accounting_date: accountingDate || undefined,
+          envelope: envelope ?? undefined,
+          confirmed_cost_preview: confirmedCostPreview ? true : undefined,
+          attachments: attachmentRefs.length > 0 ? attachmentRefs : undefined,
+        }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      if (response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let eventType = 'message';
+        let dataLines: string[] = [];
+
+        const dispatch = () => {
+          const dataPayload = dataLines.join('\n');
+          dataLines = [];
+          const currentEventType = eventType;
+          eventType = 'message';
+          if (!dataPayload) return;
+          handleSseEvent(currentEventType, dataPayload, setDraft, onToolStartRef.current);
+        };
+
+        const processLine = (line: string) => {
+          if (line === '') {
+            dispatch();
+            return;
+          }
+          if (line.startsWith('event:')) {
+            eventType = line.slice(6).trim() || 'message';
+            return;
+          }
+          if (line.startsWith('data:')) {
+            dataLines.push(line.slice(5).trim());
+          }
+        };
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) processLine(line.trimEnd());
+        }
+        if (buffer) processLine(buffer.trimEnd());
+        dispatch();
+      }
+      setDraft(null);
+      await refresh();
+    } catch (e) {
+      if (isAbortError(e)) {
+        if (streamAbortRef.current === streamAbortController) {
+          setDraft(null);
+          void refresh().catch((refreshError) => {
+            setError(refreshError instanceof Error ? refreshError.message : String(refreshError));
+          });
+        }
+      } else {
+        if (streamAbortRef.current === streamAbortController) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
+      }
+    } finally {
+      if (streamAbortRef.current === streamAbortController) {
+        streamAbortRef.current = null;
+        setSending(false);
+      }
+      // A graded turn can transition the goal run server-side (satisfied / stuck) — the
+      // grader runs in-loop with no SSE of its own — so refresh the card after the turn.
+      if (threadId != null && goalRunningRef.current) {
+        void reloadGoalFor(threadId);
+      }
+    }
+  }, [activeId, refresh, selectedModel, executionMode, reasoningEffort, threadSource, reloadGoalFor]);
+
+  const launchWorkflow = useCallback(async (slug: string, mode: 'auto' | 'yolo', args?: Record<string, string>) => {
+    let threadId = activeId;
+    if (threadId == null) {
+      const created = await api<Thread>('/api/chat/threads', {
+        method: 'POST',
+        body: JSON.stringify({ title: 'New research thread', character: 'trader', source: threadSource }),
+      });
+      threadId = created.id;
+      setThreads((prev) => [created, ...prev]);
+      setActiveId(created.id);
+    }
+
+    setError(null);
+    setSending(true);
+    setDraft({ content: '', events: [] });
+    let workflowError: string | null = null;
+
+    let streamAbortController: AbortController | null = null;
+    try {
+      streamAbortRef.current?.abort();
+      streamAbortController = new AbortController();
+      streamAbortRef.current = streamAbortController;
+      const response = await fetch(`/api/chat/threads/${threadId}/workflows/${slug}/run`, {
+        method: 'POST',
+        signal: streamAbortController.signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode, args: args ?? {} }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      if (response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let eventType = 'message';
+        let dataLines: string[] = [];
+
+        const dispatch = () => {
+          const dataPayload = dataLines.join('\n');
+          const currentEventType = eventType;
+          dataLines = [];
+          eventType = 'message';
+          if (!dataPayload) return;
+          if (currentEventType.startsWith('workflow.')) {
+            // Render workflow framing as inline markers in the live draft.
+            let parsed: Record<string, unknown> = {};
+            try {
+              parsed = JSON.parse(dataPayload) as Record<string, unknown>;
+            } catch {
+              return;
+            }
+            let marker = '';
+            if (currentEventType === 'workflow.step.start') {
+              marker = `\n\n▶ Step ${parsed.index}\n`;
+            } else if (currentEventType === 'workflow.log') {
+              marker = `\n_${String(parsed.message ?? '')}_\n`;
+            } else if (currentEventType === 'workflow.step.error') {
+              workflowError = `Workflow step ${parsed.index} failed: ${String(parsed.message ?? '')}`;
+              marker = `\n\n⚠️ Step ${parsed.index} failed: ${String(parsed.message ?? '')}\n`;
+            } else if (currentEventType === 'workflow.complete') {
+              marker = `\n\n✅ Workflow complete (${parsed.steps} steps)\n`;
+            }
+            if (marker) {
+              setDraft((prev) => ({
+                ...(prev ?? { events: [] }),
+                content: (prev?.content ?? '') + marker,
+                events: prev?.events ?? [],
+              }));
+            }
+            return;
+          }
+          handleSseEvent(currentEventType, dataPayload, setDraft, onToolStartRef.current);
+        };
+
+        const processLine = (line: string) => {
+          if (line === '') {
+            dispatch();
+            return;
+          }
+          if (line.startsWith('event:')) {
+            eventType = line.slice(6).trim() || 'message';
+            return;
+          }
+          if (line.startsWith('data:')) {
+            dataLines.push(line.slice(5).trim());
+          }
+        };
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) processLine(line.trimEnd());
+        }
+        if (buffer) processLine(buffer.trimEnd());
+        dispatch();
+      }
+      setDraft(null);
+      await refresh();
+      // A step failure is otherwise lost when the refresh replaces the draft —
+      // surface it durably.
+      if (workflowError) setError(workflowError);
+    } catch (e) {
+      if (isAbortError(e)) {
+        if (streamAbortRef.current === streamAbortController) {
+          setDraft(null);
+          void refresh().catch((refreshError) => {
+            setError(refreshError instanceof Error ? refreshError.message : String(refreshError));
+          });
+        }
+      } else if (streamAbortRef.current === streamAbortController) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      if (streamAbortRef.current === streamAbortController) {
+        streamAbortRef.current = null;
+        setSending(false);
+      }
+    }
+  }, [activeId, refresh, threadSource]);
+
+  const stopStreaming = useCallback(() => {
+    streamAbortRef.current?.abort();
+    setDraft(null);
+    setSending(false);
+  }, []);
+
+  const confirmAction = useCallback(async (messageId: number, actionId: string) => {
+    if (activeId == null) return;
+    const key = actionKey(messageId, actionId);
+    setConfirmingActionIds((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+    setThreads((prev) => markActionStatus(prev, messageId, actionId, 'confirmed'));
+    try {
+      await api<ChatMessageType>(
+        `/api/chat/threads/${activeId}/messages/${messageId}/actions/${actionId}/confirm`,
+        { method: 'POST' },
+      );
+      await refresh();
+      setAsyncAgentPollNonce((value) => value + 1);
+    } catch (e) {
+      setThreads((prev) => markActionStatus(prev, messageId, actionId, 'failed'));
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setConfirmingActionIds((prev) => {
+        if (!prev.has(key)) return prev;
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }, [activeId, refresh]);
+
+  const dismissAction = useCallback(async (messageId: number, actionId: string) => {
+    if (activeId == null) return;
+    setThreads((prev) => markActionStatus(prev, messageId, actionId, 'dismissed'));
+    try {
+      const newAssistantMessage = await api<ChatMessageType>(
+        `/api/chat/threads/${activeId}/messages/${messageId}/actions/${actionId}/dismiss`,
+        { method: 'POST' },
+      );
+      setThreads((prev) => appendMessageToThread(prev, activeId, newAssistantMessage));
+    } catch (e) {
+      setThreads((prev) => markActionStatus(prev, messageId, actionId, 'failed'));
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [activeId]);
+
+  const activeThread = useMemo(
+    () => threads.find((thread) => thread.id === activeId) ?? null,
+    [activeId, threads],
+  );
+
+  const confirmCostPreview = useCallback(async (
+    pageContext?: PageContext | null,
+    accountingDate?: string | null,
+    contextUsage?: AgentContextUsage | null,
+    envelope?: Envelope,
+  ) => {
+    const thread = threads.find((t) => t.id === activeId);
+    if (!thread) return;
+    const lastUser = [...thread.messages].reverse().find((m) => m.role === 'user');
+    if (!lastUser) return;
+    await sendMessage(
+      lastUser.content,
+      pageContext ?? null,
+      accountingDate ?? null,
+      contextUsage ?? null,
+      envelope,
+      true,
+    );
+  }, [activeId, threads, sendMessage]);
+
+  const ratifyActiveGoal = useCallback(async () => {
+    const threadId = activeId;
+    if (threadId == null) return;
+    // The frozen goal text seeds the kickoff turn the grader will judge — capture it
+    // before ratify clears state, so "Accept & start" actually starts the run.
+    const kickoff = goalContract?.goal_text ?? goalContract?.summary ?? '';
+    setGoalBusy(true);
+    let ratified = false;
+    try {
+      const state = await ratifyGoalApi(threadId);
+      if (activeIdRef.current === threadId) setGoalState(state);
+      ratified = true;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGoalBusy(false);
+    }
+    // Start the autonomous run the frozen criteria grade: the grader attaches to this
+    // streamed turn because the run is now `running`. Without this, ratify leaves the
+    // goal idle until the user manually sends another message.
+    if (ratified && kickoff && activeIdRef.current === threadId) {
+      void sendMessage(kickoff, null, null, null, 'desk_workflow');
+    }
+  }, [activeId, goalContract, sendMessage]);
+
+  const cancelActiveGoal = useCallback(async () => {
+    const threadId = activeId;
+    if (threadId == null) return;
+    setGoalBusy(true);
+    try {
+      await cancelGoalApi(threadId);
+      if (activeIdRef.current === threadId) {
+        setGoalContract(null);
+        setGoalState(null);
+        setGoalClarification(null);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGoalBusy(false);
+    }
+  }, [activeId]);
+
+  // Load the active thread's goal run (if any) when the selection changes, so a
+  // running/awaiting card survives a thread switch or reload. Clear immediately so a
+  // previous thread's card never shows against the new thread; reloadGoalFor commits
+  // only if `activeId` is still current when its requests resolve.
+  useEffect(() => {
+    setGoalContract(null);
+    setGoalState(null);
+    setGoalClarification(null);
+    if (activeId == null) return;
+    reloadGoalFor(activeId);
+  }, [activeId, reloadGoalFor]);
+
+  const streamingItem: ChatMessageType | null = draft
+    ? {
+        id: -1,
+        role: 'assistant',
+        character: activeThread?.character ?? 'trader',
+        content: draft.content,
+        meta: {
+          process_events: draft.events,
+          todos: draft.todos,
+          cost_preview: draft.cost_preview,
+          envelope_transition: draft.envelope_transition,
+        },
+      }
+    : null;
+
+  return {
+    threads,
+    activeThreadId: activeId,
+    activeThread,
+    loading,
+    sending,
+    streaming,
+    streamingItem,
+    error,
+    viewMode,
+    channels: modelConfig?.channels ?? [],
+    selectedModel,
+    executionMode,
+    reasoningEffort,
+    confirmingActionIds,
+    taskRunsById,
+    includeArena,
+    setIncludeArena,
+    threadSearch: threadSearchInput,
+    setThreadSearch: setThreadSearchInput,
+    moreThreadsAvailable,
+    loadMoreThreads,
+    setSelectedModel,
+    setExecutionMode,
+    setReasoningEffort,
+    setViewMode,
+    selectThread: setActiveId,
+    createThread,
+    renameThread,
+    exportThread,
+    deleteThread,
+    forkThread,
+    sendMessage,
+    launchWorkflow,
+    confirmCostPreview,
+    stopStreaming,
+    confirmAction,
+    dismissAction,
+    refreshModels,
+    goalContract,
+    goalState,
+    goalClarification,
+    goalBusy,
+    ratifyActiveGoal,
+    cancelActiveGoal,
+  };
+}
+
+function useSessionString<T extends string>(
+  key: string,
+  defaultValue: T,
+  allowed: readonly T[],
+): [T, Dispatch<SetStateAction<T>>] {
+  const [value, setValue] = useState<T>(() => {
+    if (typeof window === 'undefined') return defaultValue;
+    try {
+      const stored = window.sessionStorage.getItem(key);
+      return stored != null && (allowed as readonly string[]).includes(stored)
+        ? (stored as T)
+        : defaultValue;
+    } catch {
+      return defaultValue;
+    }
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.sessionStorage.setItem(key, value);
+    } catch {
+      // Ignore storage failures; the in-memory selection still works.
+    }
+  }, [key, value]);
+
+  return [value, setValue];
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException
+    ? error.name === 'AbortError'
+    : error instanceof Error && error.name === 'AbortError';
+}
+
+function downloadJson(filename: string, data: unknown) {
+  if (!('createObjectURL' in URL)) return;
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const href = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = href;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(href);
+}
+
+function selectionExists(
+  cfg: AgentModelConfig,
+  selected: AgentModelSelection,
+): boolean {
+  return cfg.channels.some((channel) => (
+    channel.name === selected.channel
+    && channel.models.some((model) => (
+      model.provider === selected.provider && model.model === selected.model
+    ))
+  ));
+}
+
+const ARENA_THREAD_SOURCE = 'arena';
+
+/** Threads fetched per page, and the step each "Load more" adds. */
+export const THREAD_PAGE_SIZE = 20;
+
+/**
+ * Which `?source=` scopes one controller must request (pure; for tests).
+ *
+ * Always its own threads, plus arena only when the desk toggle asks for them.
+ * A controller already scoped to arena must not request that scope twice.
+ */
+export function threadListScopes(threadSource: string, includeArena: boolean): string[] {
+  return includeArena && threadSource !== ARENA_THREAD_SOURCE
+    ? [threadSource, ARENA_THREAD_SOURCE]
+    : [threadSource];
+}
+
+/** Newest first; a row with no (or unparseable) `updated_at` sorts last. */
+function threadOrderKey(thread: Thread): number {
+  const parsed = thread.updated_at ? Date.parse(thread.updated_at) : NaN;
+  return Number.isNaN(parsed) ? -Infinity : parsed;
+}
+
+/**
+ * Fold scoped responses back into one updated_at-desc list (pure; for tests).
+ *
+ * Each response is sorted on its own but their concatenation is not, and
+ * `refresh` resumes "the most recent same-source thread" by taking the first
+ * match — so re-sorting here is what keeps auto-selection correct.
+ *
+ * Every scope is fetched with the same `limit`, so the union can hold a
+ * multiple of one page; `limit` trims it back. That is exact rather than
+ * approximate — the true newest N of a union always lies inside the union of
+ * each list's newest N.
+ */
+export function mergeThreadLists(lists: Thread[][], limit?: number): Thread[] {
+  const merged = lists.flat().sort((a, b) => threadOrderKey(b) - threadOrderKey(a));
+  return limit == null ? merged : merged.slice(0, limit);
+}
+
+/**
+ * Whether another page may exist (pure; for tests).
+ *
+ * The list endpoint returns rows, not a total, so a full page is the only
+ * available signal. Conservative by design: it can offer one "Load more" that
+ * turns out to add nothing, which is far better than hiding threads that exist.
+ */
+export function hasMoreThreads(lists: Thread[][], limit: number): boolean {
+  return lists.some((list) => list.length >= limit);
+}
+
+/**
+ * Keep the open thread in the list even when the latest fetch excludes it
+ * (pure; for tests).
+ *
+ * `activeThread` is derived from this list, so a search whose results omit the
+ * open thread would otherwise blank the message pane of the conversation the
+ * user is reading. Only ever re-uses a thread we already held — it never
+ * invents one.
+ */
+export function withActiveThreadPreserved(
+  list: Thread[],
+  previous: Thread[],
+  activeId: number | null,
+): Thread[] {
+  if (activeId == null || list.some((thread) => thread.id === activeId)) return list;
+  const open = previous.find((thread) => thread.id === activeId);
+  return open ? [open, ...list] : list;
+}
+
+export type WorkflowSseEvent = { type: string; data: Record<string, unknown> };
+
+/** Parse a complete SSE text blob into ordered events (pure; for tests/non-streaming). */
+export function parseWorkflowSse(text: string): WorkflowSseEvent[] {
+  const events: WorkflowSseEvent[] = [];
+  let eventType = 'message';
+  let dataLines: string[] = [];
+  const flush = () => {
+    if (dataLines.length) {
+      try {
+        events.push({ type: eventType, data: JSON.parse(dataLines.join('\n')) });
+      } catch {
+        /* skip malformed */
+      }
+    }
+    eventType = 'message';
+    dataLines = [];
+  };
+  for (const line of text.split('\n')) {
+    if (line === '') {
+      flush();
+    } else if (line.startsWith('event:')) {
+      eventType = line.slice(6).trim();
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trim());
+    }
+  }
+  flush();
+  return events;
+}
+
+function handleSseEvent(
+  eventType: string,
+  dataPayload: string,
+  setDraft: Dispatch<SetStateAction<Draft | null>>,
+  onToolStart?: (name: string, args: unknown) => void,
+) {
+  if (eventType === 'heartbeat') return;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(dataPayload) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+
+  if (eventType === 'token') {
+    setDraft((prev) => ({
+      ...(prev ?? {}),
+      content: (prev?.content ?? '') + (typeof parsed.text === 'string' ? parsed.text : ''),
+      events: prev?.events ?? [],
+    }));
+    return;
+  }
+
+  if (eventType === 'tool_start') {
+    const id = typeof parsed.id === 'string' ? parsed.id : '';
+    const name = typeof parsed.name === 'string' ? parsed.name : 'tool';
+    onToolStart?.(name, parsed.args);
+    const newEvent: ToolEvent = {
+      id,
+      name,
+      status: 'running',
+      args: parsed.args as ToolEvent['args'],
+    };
+    setDraft((prev) => ({
+      ...(prev ?? {}),
+      content: prev?.content ?? '',
+      events: [...(prev?.events ?? []), newEvent],
+    }));
+    return;
+  }
+
+  if (eventType === 'tool_end') {
+    setDraft((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        events: prev.events.map((ev) =>
+          ev.id === parsed.id
+            ? {
+                ...ev,
+                status: parsed.error ? 'error' : 'done',
+                duration_ms:
+                  typeof parsed.duration_ms === 'number' ? parsed.duration_ms : undefined,
+                output: parsed.output,
+                error: typeof parsed.error === 'string' ? parsed.error : undefined,
+              }
+            : ev,
+        ),
+      };
+    });
+    return;
+  }
+
+  if (eventType === 'todo_update') {
+    const todos = normalizeTodoUpdate(parsed.todos);
+    if (!todos) return;
+    setDraft((prev) => ({
+      ...(prev ?? {}),
+      content: prev?.content ?? '',
+      events: prev?.events ?? [],
+      todos,
+    }));
+    return;
+  }
+
+  if (eventType === 'error') {
+    const message = typeof parsed.message === 'string' ? parsed.message : 'Stream error';
+    setDraft((prev) => ({
+      ...(prev ?? {}),
+      content: prev?.content || message,
+      events: prev?.events ?? [],
+    }));
+    return;
+  }
+
+  if (eventType === 'cost_preview_required') {
+    const tool_name = typeof parsed.tool_name === 'string' ? parsed.tool_name : 'tool';
+    const estimated_seconds =
+      typeof parsed.estimated_seconds === 'number' ? parsed.estimated_seconds : 0;
+    setDraft((prev) => ({
+      ...(prev ?? {}),
+      content: prev?.content ?? '',
+      events: prev?.events ?? [],
+      cost_preview: { tool_name, estimated_seconds },
+    }));
+    return;
+  }
+
+  if (eventType === 'envelope_transitioned') {
+    const prevEnv = parsed.previous_envelope;
+    const newEnv = parsed.new_envelope;
+    if (typeof prevEnv === 'string' && typeof newEnv === 'string') {
+      setDraft((prev) => ({
+        ...(prev ?? {}),
+        // Drop the first-pass refusal prose streamed under the narrow envelope;
+        // the runtime re-streams the real answer under the widened envelope.
+        // Mirrors the backend's reset_user_facing_output_for_retry so the live
+        // bubble matches the persisted message. Tool events are kept as a trace.
+        content: '',
+        events: prev?.events ?? [],
+        envelope_transition: {
+          previous_envelope: prevEnv as Envelope,
+          new_envelope: newEnv as Envelope,
+          reason: typeof parsed.reason === 'string' ? parsed.reason : '',
+          denied_tool: typeof parsed.denied_tool === 'string' ? parsed.denied_tool : '',
+        },
+      }));
+    }
+  }
+}
+
+function normalizeTodoUpdate(value: unknown): AgentTodoItem[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: AgentTodoItem[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const content = typeof record.content === 'string' ? record.content.trim() : '';
+    const status = record.status;
+    if (!content) continue;
+    if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') {
+      continue;
+    }
+    out.push({ content, status });
+  }
+  return out;
+}
+
+function appendMessageToThread(
+  threads: Thread[],
+  threadId: number,
+  message: ChatMessageType,
+): Thread[] {
+  return threads.map((thread) => {
+    if (thread.id !== threadId) return thread;
+    const already = thread.messages.some((m) => m.id === message.id);
+    if (already) return thread;
+    return { ...thread, messages: [...thread.messages, message] };
+  });
+}
+
+function markActionStatus(
+  threads: Thread[],
+  messageId: number,
+  actionId: string,
+  status: 'confirmed' | 'dismissed' | 'failed',
+): Thread[] {
+  return threads.map((thread) => ({
+    ...thread,
+    messages: thread.messages.map((message) => {
+      const actions = message.meta?.pending_actions;
+      if (message.id !== messageId || !Array.isArray(actions)) return message;
+      return {
+        ...message,
+        meta: {
+          ...message.meta,
+          pending_actions: actions.map((action) =>
+            action.id === actionId ? { ...action, status } : action,
+          ),
+        },
+      };
+    }),
+  }));
+}
+
+function actionKey(messageId: number, actionId: string): string {
+  return `${messageId}:${actionId}`;
+}
+
+function collectWatchedTaskIds(thread: Thread | null): number[] {
+  if (!thread) return [];
+  const ids = new Set<number>();
+  for (const message of thread.messages) {
+    const actions = message.meta?.pending_actions;
+    if (!Array.isArray(actions)) continue;
+    for (const action of actions) {
+      const taskId = action.task_id ?? action.async_task_id;
+      if (typeof taskId === 'number' && Number.isFinite(taskId)) {
+        ids.add(taskId);
+      }
+    }
+  }
+  return Array.from(ids).sort((a, b) => a - b);
+}

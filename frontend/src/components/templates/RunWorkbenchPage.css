@@ -1,0 +1,4 @@
+/* RunWorkbenchPage
+   Shared three-zone layout: run config in the page header, run history in the
+   left rail, run detail in the right workspace. The page-header chrome and the
+   run-list/panel chrome are inherited from PageHeader.css and WorkbenchPage.css. */
