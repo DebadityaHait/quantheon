@@ -1,0 +1,200 @@
+import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { Audit, type AuditProps } from './Audit';
+import type { AuditAction } from '../types';
+
+const ROW: AuditAction = {
+  id: 1,
+  kind: 'execution',
+  status: 'ok',
+  deny_reason: null,
+  tool_name: 'book_position',
+  tool_class: 'domain_write',
+  tool_call_id: 'c1',
+  audit_ref: null,
+  mode: 'yolo',
+  envelope: null,
+  actor: 'desk_user',
+  model: null,
+  persona: 'trader',
+  thread_id: 7,
+  workflow_id: null,
+  session_id: null,
+  task_id: null,
+  message_id: null,
+  desk_workflow_slug: null,
+  args_json: { qty: 1 },
+  redacted: false,
+  result_preview: null,
+  error: null,
+  occurred_at: '2026-07-02T10:00:00',
+  completed_at: '2026-07-02T10:00:01',
+  guard: null,
+};
+
+function props(overrides: Partial<AuditProps> = {}): AuditProps {
+  return {
+    items: [ROW],
+    total: 1,
+    page: 0,
+    pageSize: 25,
+    summary: null,
+    loading: false,
+    error: null,
+    search: '',
+    statusFilter: '',
+    classFilter: '',
+    modeFilter: '',
+    guardFilter: '',
+    detail: null,
+    onSearch: vi.fn(),
+    onStatusFilter: vi.fn(),
+    onClassFilter: vi.fn(),
+    onModeFilter: vi.fn(),
+    onGuardFilter: vi.fn(),
+    onRowClick: vi.fn(),
+    onCloseDetail: vi.fn(),
+    onPage: vi.fn(),
+    onPageSize: vi.fn(),
+    onRefresh: vi.fn(),
+    ...overrides,
+  };
+}
+
+describe('Audit', () => {
+  it('renders rows with tool, status and yolo mode badge', () => {
+    render(<Audit {...props()} />);
+    expect(screen.getByText('book_position')).toBeInTheDocument();
+    const okBadges = screen
+      .getAllByText('ok')
+      .filter((el) => el.classList.contains('wl-badge'));
+    expect(okBadges).toHaveLength(1);
+    const yoloBadges = screen
+      .getAllByText('yolo')
+      .filter((el) => el.classList.contains('wl-badge'));
+    expect(yoloBadges).toHaveLength(1);
+    const classBadges = screen
+      .getAllByText('domain_write')
+      .filter((el) => el.classList.contains('wl-badge'));
+    expect(classBadges).toHaveLength(1);
+  });
+
+  it('renders empty state when no records', () => {
+    render(<Audit {...props({ items: [], total: 0 })} />);
+    expect(screen.getByText('No audit records')).toBeInTheDocument();
+  });
+
+  it('renders denied status with deny reason in detail modal', () => {
+    render(
+      <Audit
+        {...props({
+          detail: {
+            ...ROW,
+            status: 'denied',
+            deny_reason: 'capability',
+            related: [],
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText('capability')).toBeInTheDocument();
+  });
+
+  it('renders detail modal with args and related action chain', () => {
+    render(
+      <Audit
+        {...props({
+          detail: {
+            ...ROW,
+            related: [
+              { ...ROW, id: 2, kind: 'hitl_decision', status: 'approved' },
+            ],
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText(/"qty": 1/)).toBeInTheDocument();
+    expect(screen.getByText('hitl_decision')).toBeInTheDocument();
+    const approvedBadges = screen
+      .getAllByText('approved')
+      .filter((el) => el.classList.contains('wl-badge'));
+    expect(approvedBadges).toHaveLength(1);
+  });
+
+  it('renders a rows-per-page pager with prev/next controls', () => {
+    render(<Audit {...props({ total: 5 })} />);
+    expect(screen.getByText('1-5 of 5')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Previous page' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Next page' })).toBeDisabled();
+  });
+
+  it('enables next page when more rows exist beyond the current page', () => {
+    const onPage = vi.fn();
+    render(<Audit {...props({ total: 60, page: 0, pageSize: 25, onPage })} />);
+    expect(screen.getByText('1-25 of 60')).toBeInTheDocument();
+    const next = screen.getByRole('button', { name: 'Next page' });
+    expect(next).not.toBeDisabled();
+    next.click();
+    expect(onPage).toHaveBeenCalledWith(1);
+  });
+});
+
+describe('Guard column', () => {
+  it('shows the System One verdict, and a dash when the call was never guarded', () => {
+    render(
+      <Audit
+        {...props({
+          items: [
+            { ...ROW, id: 1, guard: { verdict: 'flagged', max_probability: 0.85, source: 'live', state_fidelity: null } },
+            { ...ROW, id: 2, tool_call_id: 'c2', guard: null },
+          ],
+          total: 2,
+        })}
+      />,
+    );
+    expect(screen.getByText('Guard')).toBeInTheDocument();
+    expect(screen.getByText('flagged')).toBeInTheDocument();
+    expect(screen.getByTitle('System One p=0.85')).toBeInTheDocument();
+  });
+
+  it('marks a sweep verdict and says what it saw', () => {
+    render(
+      <Audit
+        {...props({
+          items: [{
+            ...ROW,
+            guard: { verdict: 'flagged', max_probability: 0.91, source: 'sweep', state_fidelity: 'trace' },
+          }],
+        })}
+      />,
+    );
+    expect(screen.getByText('flagged · sweep')).toBeInTheDocument();
+    expect(screen.getByTitle('System One p=0.91, sweep, trace')).toBeInTheDocument();
+  });
+
+  it('keeps a live verdict unmarked', () => {
+    render(
+      <Audit
+        {...props({
+          items: [{
+            ...ROW,
+            guard: { verdict: 'clear', max_probability: 0.1, source: 'live', state_fidelity: null },
+          }],
+        })}
+      />,
+    );
+    expect(screen.getByText('clear')).toBeInTheDocument();
+    expect(screen.getByTitle('System One p=0.10')).toBeInTheDocument();
+  });
+
+  it('offers the risk manager a Guard filter', () => {
+    const onGuardFilter = vi.fn();
+    render(<Audit {...props({ onGuardFilter })} />);
+    for (const name of ['All guard', 'Flagged', 'Clear', 'Unscored', 'No verdict']) {
+      expect(screen.getByRole('option', { name })).toBeInTheDocument();
+    }
+    const select = screen.getByRole('option', { name: 'Flagged' }).closest('select')!;
+    fireEvent.change(select, { target: { value: 'flagged' } });
+    expect(onGuardFilter).toHaveBeenCalledWith('flagged');
+  });
+});

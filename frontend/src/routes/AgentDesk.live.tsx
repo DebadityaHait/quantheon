@@ -1,0 +1,175 @@
+import { useEffect, useState } from 'react';
+import type { DeskWorkflowSummary, PageContext } from '../types';
+import { AgentDesk } from './AgentDesk';
+import { WorkflowParamsDialog } from '../components/WorkflowParamsDialog';
+import { Skeleton } from '../components/Skeleton';
+import { Empty } from '../components/Empty';
+import { listPortfolios, listWorkflows } from '../api/client';
+import {
+  useAgentChatController,
+  type AgentChatController,
+} from '../hooks/useAgentChatController';
+
+type Props = {
+  controller?: AgentChatController;
+  pageContext?: PageContext | null;
+  accountingDate?: string;
+  onOpenTrace?: (threadId: number) => void;
+};
+
+export function AgentDeskLive(props: Props = {}) {
+  if (props.controller) {
+    return (
+      <AgentDeskLiveView
+        controller={props.controller}
+        pageContext={props.pageContext ?? null}
+        accountingDate={props.accountingDate}
+        onOpenTrace={props.onOpenTrace}
+      />
+    );
+  }
+  return (
+    <AgentDeskLiveStandalone
+      pageContext={props.pageContext ?? null}
+      accountingDate={props.accountingDate}
+      onOpenTrace={props.onOpenTrace}
+    />
+  );
+}
+
+function AgentDeskLiveStandalone({
+  pageContext,
+  accountingDate,
+  onOpenTrace,
+}: {
+  pageContext: PageContext | null;
+  accountingDate?: string;
+  onOpenTrace?: (threadId: number) => void;
+}) {
+  const controller = useAgentChatController();
+  return (
+    <AgentDeskLiveView
+      controller={controller}
+      pageContext={pageContext}
+      accountingDate={accountingDate}
+      onOpenTrace={onOpenTrace}
+    />
+  );
+}
+
+function AgentDeskLiveView({
+  controller,
+  pageContext,
+  accountingDate,
+  onOpenTrace,
+}: {
+  controller: AgentChatController;
+  pageContext: PageContext | null;
+  accountingDate?: string;
+  onOpenTrace?: (threadId: number) => void;
+}) {
+  const [workflows, setWorkflows] = useState<DeskWorkflowSummary[]>([]);
+  const [paramsWorkflow, setParamsWorkflow] = useState<DeskWorkflowSummary | null>(null);
+  const [portfolios, setPortfolios] = useState<string[]>([]);
+  useEffect(() => {
+    void listWorkflows().then(setWorkflows).catch(() => setWorkflows([]));
+  }, []);
+
+  const handleRequestParams = (wf: DeskWorkflowSummary) => {
+    if ((wf.params ?? []).some((p) => p.type === 'portfolio') && portfolios.length === 0) {
+      void listPortfolios().then(setPortfolios).catch(() => setPortfolios([]));
+    }
+    setParamsWorkflow(wf);
+  };
+
+  if (controller.loading) {
+    return (
+      <div>
+        <Skeleton height={32} width="40%" />
+        <div style={{ height: 12 }} />
+        <Skeleton height={400} />
+      </div>
+    );
+  }
+
+  if (controller.error) {
+    return <Empty message={`Could not load Agent Desk: ${controller.error}`} />;
+  }
+
+  return (
+    <>
+    <AgentDesk
+      threads={controller.threads}
+      activeThreadId={controller.activeThreadId}
+      sending={controller.sending}
+      streaming={controller.streaming}
+      streamingItem={controller.streamingItem}
+      viewMode={controller.viewMode}
+      channels={controller.channels}
+      selectedModel={controller.selectedModel}
+      executionMode={controller.executionMode}
+      reasoningEffort={controller.reasoningEffort}
+      confirmingActionIds={controller.confirmingActionIds}
+      taskRunsById={controller.taskRunsById}
+      showArena={controller.includeArena}
+      onShowArenaChange={controller.setIncludeArena}
+      threadSearch={controller.threadSearch}
+      onThreadSearchChange={controller.setThreadSearch}
+      moreThreadsAvailable={controller.moreThreadsAvailable}
+      onLoadMoreThreads={controller.loadMoreThreads}
+      onChangeModel={controller.setSelectedModel}
+      onChangeMode={controller.setExecutionMode}
+      onChangeReasoningEffort={controller.setReasoningEffort}
+      onStopStreaming={controller.stopStreaming}
+      onRefreshModels={controller.refreshModels}
+      onChangeViewMode={controller.setViewMode}
+      onSelectThread={controller.selectThread}
+      onNewThread={controller.createThread}
+      onRenameThread={controller.renameThread}
+      onExportThread={controller.exportThread}
+      onDeleteThread={controller.deleteThread}
+      onForkThread={controller.forkThread}
+      onOpenTrace={onOpenTrace}
+      onSend={(message, attachments) => controller.sendMessage(
+        message,
+        pageContext,
+        accountingDate,
+        undefined,
+        'desk_workflow',
+        undefined,
+        attachments,
+      )}
+      onConfirmAction={controller.confirmAction}
+      onDismissAction={controller.dismissAction}
+      onConfirmCostPreview={() => controller.confirmCostPreview(
+        pageContext,
+        accountingDate,
+        undefined,
+        'desk_workflow',
+      )}
+      workflows={workflows}
+      onLaunchWorkflow={controller.launchWorkflow}
+      onRequestParams={handleRequestParams}
+      goalContract={controller.goalContract}
+      goalState={controller.goalState}
+      goalClarification={controller.goalClarification}
+      goalBusy={controller.goalBusy}
+      onRatifyGoal={controller.ratifyActiveGoal}
+      onCancelGoal={controller.cancelActiveGoal}
+    />
+    {paramsWorkflow && (
+      <WorkflowParamsDialog
+        open
+        workflow={paramsWorkflow}
+        portfolios={portfolios}
+        onCancel={() => setParamsWorkflow(null)}
+        onRun={(args) => {
+          const wf = paramsWorkflow;
+          setParamsWorkflow(null);
+          void controller.launchWorkflow(wf.slug, wf.default_mode, args);
+        }}
+      />
+    )}
+    </>
+  );
+}
