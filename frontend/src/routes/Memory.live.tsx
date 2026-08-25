@@ -1,0 +1,229 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  listMemoryFacts, getMemoryStatus, listPortfoliosWithIds,
+  approveMemoryFact, setMemoryFactPinned, createMemoryFact, patchMemoryFact, deleteMemoryFact,
+  errorMessage,
+} from '../api/client';
+import type { MemoryFact, MemoryStatus, PageContextReporter } from '../types';
+import {
+  Memory, type MemoryScope, type MemoryStatusFilter, type MemoryModal, type MemoryDraft,
+} from './Memory';
+
+const DEFAULT_FLOOR = 0.7;
+const PAGE = 100;
+
+type Props = { onPageContextChange?: PageContextReporter };
+
+export function MemoryLive(_props: Props) {
+  const [facts, setFacts] = useState<MemoryFact[]>([]);
+  const [total, setTotal] = useState(0);
+  const [status, setStatus] = useState<MemoryStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const [activeScope, setActiveScope] = useState<MemoryScope>('all');
+  const [statusFilter, setStatusFilter] = useState<MemoryStatusFilter>('current');
+  const [search, setSearch] = useState('');
+  const [portfolios, setPortfolios] = useState<Array<{ id: number; name: string }>>([]);
+  const [portfoliosError, setPortfoliosError] = useState<string | null>(null);
+  const [selectedPortfolio, setSelectedPortfolio] = useState<number | null>(null);
+  const [rowBusy, setRowBusy] = useState<Set<number>>(new Set());
+  const [modal, setModal] = useState<MemoryModal>(null);
+  const [modalSaving, setModalSaving] = useState(false);
+  const [modalError, setModalError] = useState<string | null>(null);
+
+  const reqSeq = useRef(0);
+  const nextOffset = useRef(0);
+  // Mirror the active filters in refs so loadView has a STABLE identity and a
+  // post-mutation refresh always uses the CURRENT filters — never the stale
+  // closure from the render where the row action was clicked.
+  const scopeRef = useRef(activeScope);
+  const statusRef = useRef(statusFilter);
+  const portfolioRef = useRef(selectedPortfolio);
+
+  const confidenceFloor = status?.config.confidence_floor ?? DEFAULT_FLOOR;
+
+  const loadView = useCallback(
+    async (reset: boolean) => {
+      const token = ++reqSeq.current;
+      if (reset) setLoading(true);
+      const scope = scopeRef.current;
+      const scope_type = scope === 'all' ? undefined : scope;
+      const statusParam = statusRef.current === 'current' ? undefined : statusRef.current;
+      const scope_id =
+        scope === 'book' && portfolioRef.current != null ? String(portfolioRef.current) : undefined;
+      const offset = reset ? 0 : nextOffset.current;
+
+      const [factsR, statusR] = await Promise.allSettled([
+        listMemoryFacts({ scope_type, status: statusParam, scope_id, limit: PAGE, offset }),
+        reset ? getMemoryStatus() : Promise.resolve(undefined),
+      ]);
+      if (token !== reqSeq.current) return;
+
+      if (factsR.status === 'fulfilled') {
+        const { items, total: t } = factsR.value;
+        if (reset) {
+          setFacts(items);
+          nextOffset.current = items.length;
+        } else {
+          setFacts((prev) => [...prev, ...items]);
+          nextOffset.current += items.length;
+        }
+        setTotal(t);
+        setError(null);
+        setFeedback(null);
+      } else if (reset) {
+        setError(errorMessage(factsR.reason));
+      } else {
+        setFeedback(errorMessage(factsR.reason));
+      }
+
+      if (reset && statusR.status === 'fulfilled' && statusR.value) {
+        setStatus(statusR.value);
+      }
+      if (reset) setLoading(false);
+    },
+    [],
+  );
+
+  // Sync filter refs THEN reload — runs on mount and on every filter change.
+  useEffect(() => {
+    scopeRef.current = activeScope;
+    statusRef.current = statusFilter;
+    portfolioRef.current = selectedPortfolio;
+    void loadView(true);
+  }, [activeScope, statusFilter, selectedPortfolio, loadView]);
+
+  useEffect(() => {
+    listPortfoliosWithIds()
+      .then(setPortfolios)
+      .catch((e: unknown) => setPortfoliosError(errorMessage(e)));
+  }, []);
+
+  const withRow = useCallback(
+    async (id: number, fn: () => Promise<unknown>) => {
+      setRowBusy((prev) => new Set(prev).add(id));
+      try {
+        await fn();
+        await loadView(true);
+      } catch (e) {
+        setFeedback(errorMessage(e));
+      } finally {
+        setRowBusy((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
+    },
+    [loadView],
+  );
+
+  const onApprove = (f: MemoryFact) => void withRow(f.id, () => approveMemoryFact(f.id));
+  const onPin = (f: MemoryFact) => void withRow(f.id, () => setMemoryFactPinned(f.id, !f.pinned));
+  const onDelete = (f: MemoryFact) => { setModalError(null); setModal({ kind: 'delete', fact: f }); };
+  const onConfirmDelete = async () => {
+    if (!modal || modal.kind !== 'delete') return;
+    const id = modal.fact.id;
+    setModalSaving(true);
+    setModalError(null);
+    setRowBusy((prev) => new Set(prev).add(id));
+    try {
+      await deleteMemoryFact(id);
+      setModal(null);
+      await loadView(true);
+    } catch (e) {
+      // Keep the confirm modal open so the destructive action is not lost.
+      setModalError(errorMessage(e));
+    } finally {
+      setModalSaving(false);
+      setRowBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
+  const onNew = () =>
+    setModal({ kind: 'create', draft: { scope_type: 'user', portfolioId: null, content: '', confidence: 1, category: '' } });
+  const onEdit = (f: MemoryFact) =>
+    setModal({
+      kind: 'edit',
+      fact: f,
+      draft: {
+        scope_type: f.scope_type,
+        // Book scope_id is the stringified portfolio id; preserve it so the edit
+        // form is saveable (scope/portfolio is fixed on edit and not re-sent).
+        portfolioId: f.scope_type === 'book' && /^\d+$/.test(f.scope_id) ? Number(f.scope_id) : null,
+        content: f.content,
+        confidence: f.confidence,
+        category: f.category ?? '',
+      },
+    });
+  const onModalChange = (draft: MemoryDraft) =>
+    setModal((m) => (m && m.kind !== 'delete' ? { ...m, draft } : m));
+
+  const onModalSave = async () => {
+    if (!modal || modal.kind === 'delete') return;
+    const d = modal.draft;
+    setModalSaving(true);
+    setModalError(null);
+    try {
+      if (modal.kind === 'create') {
+        await createMemoryFact({
+          scope_type: d.scope_type,
+          scope_id: d.scope_type === 'book' && d.portfolioId != null ? String(d.portfolioId) : undefined,
+          content: d.content,
+          confidence: d.confidence,
+          category: d.category === '' ? undefined : d.category,
+        });
+      } else {
+        await patchMemoryFact(modal.fact.id, { content: d.content, confidence: d.confidence, category: d.category });
+      }
+      setModal(null);
+      await loadView(true);
+    } catch (e) {
+      setModalError(errorMessage(e));
+    } finally {
+      setModalSaving(false);
+    }
+  };
+
+  return (
+    <Memory
+      facts={facts}
+      total={total}
+      status={status}
+      loading={loading}
+      error={error}
+      feedback={feedback}
+      activeScope={activeScope}
+      statusFilter={statusFilter}
+      search={search}
+      portfolios={portfolios}
+      portfoliosError={portfoliosError}
+      selectedPortfolio={selectedPortfolio}
+      rowBusy={rowBusy}
+      confidenceFloor={confidenceFloor}
+      modal={modal}
+      modalSaving={modalSaving}
+      modalError={modalError}
+      onScope={setActiveScope}
+      onStatusFilter={setStatusFilter}
+      onSearch={setSearch}
+      onSelectPortfolio={setSelectedPortfolio}
+      onRefresh={() => void loadView(true)}
+      onLoadMore={() => void loadView(false)}
+      onApprove={onApprove}
+      onPin={onPin}
+      onEdit={onEdit}
+      onDelete={onDelete}
+      onNew={onNew}
+      onModalChange={onModalChange}
+      onModalSave={() => void onModalSave()}
+      onModalCancel={() => { setModal(null); setModalError(null); }}
+      onConfirmDelete={onConfirmDelete}
+    />
+  );
+}
