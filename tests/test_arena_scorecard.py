@@ -1,0 +1,370 @@
+"""Tests for the Arena per-model scorecard generator (pure, no DB).
+
+Every test runs against the frozen run #94 fixtures captured in
+`tests/fixtures/arena_run94_*.json`, so the suite never touches the live DB.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from app.services.arena.scorecard import (
+    banked_run_ids,
+    FailedCheck,
+    Target,
+    failed_checks,
+    latest_transcript_paths,
+    load_targets,
+    render_scorecard,
+    resolve_transcript,
+)
+
+REPO = Path(__file__).resolve().parents[1]
+TARGETS = REPO / "docs/arena/scorecards/targets.yaml"
+FIXTURES = REPO / "tests/fixtures"
+
+
+@pytest.fixture
+def leaderboard() -> list[dict]:
+    return json.loads((FIXTURES / "arena_run94_leaderboard.json").read_text())
+
+
+@pytest.fixture
+def breakdowns() -> dict:
+    return json.loads((FIXTURES / "arena_run94_breakdowns.json").read_text())
+
+
+def test_loads_ten_targets():
+    targets = load_targets(TARGETS)
+    assert len(targets) == 10
+
+
+def test_every_target_model_exists_on_the_board(leaderboard):
+    board = {r["model_id"] for r in leaderboard}
+    for t in load_targets(TARGETS):
+        for mid in t.model_ids:
+            assert mid in board, f"{t.lab}: {mid} is not on run #94"
+
+
+def test_no_model_is_claimed_by_two_targets():
+    seen: set[str] = set()
+    for t in load_targets(TARGETS):
+        for mid in t.model_ids:
+            assert mid not in seen, f"{mid} claimed twice"
+            seen.add(mid)
+
+
+def test_tiers_are_valid_and_glm_carries_the_interop_note():
+    targets = {t.lab: t for t in load_targets(TARGETS)}
+    assert {t.tier for t in targets.values()} <= {"A", "B1", "B2"}
+    # Accuracy rule: GLM's harness fault was found and fixed, so it carries the
+    # interop note rather than an open "is my harness broken?" question.
+    assert targets["Zhipu"].interop_note
+
+
+def test_interop_note_set_for_exactly_the_four_protocol_pinned_labs():
+    labs = {t.lab for t in load_targets(TARGETS) if t.interop_note}
+    assert labs == {"Zhipu", "Alibaba", "Meituan", "MiniMax"}
+
+
+def test_each_interop_note_is_distinct():
+    """Four pinned models, four DIFFERENT symptoms — a shared blob would tell
+    two labs about a bug that was never theirs."""
+    notes = [t.interop_note for t in load_targets(TARGETS) if t.interop_note]
+    assert len(notes) == len(set(notes)) == 4
+
+
+def test_only_protocol_pinned_labs_declare_the_anthropic_protocol():
+    for t in load_targets(TARGETS):
+        pinned = t.serving.get("protocol") == "anthropic"
+        assert pinned == bool(t.interop_note), (
+            f"{t.lab}: protocol pin and interop note disagree")
+
+
+def test_every_target_discloses_serving_config():
+    for t in load_targets(TARGETS):
+        assert t.serving.get("gateway"), f"{t.lab} discloses no gateway"
+        assert t.serving.get("protocol"), f"{t.lab} discloses no protocol"
+
+
+def test_every_target_declares_at_least_one_channel():
+    for t in load_targets(TARGETS):
+        assert t.channels, f"{t.lab} has no outreach channel"
+
+
+def test_failed_checks_returns_at_most_limit(breakdowns):
+    got = failed_checks(breakdowns["glm-5-2"], limit=3)
+    assert len(got) <= 3
+    assert all(isinstance(c, FailedCheck) for c in got)
+
+
+def test_failed_checks_finds_glm_synthesis_failures(breakdowns):
+    """GLM scored synthesis 0/5, so at least one synthesis check must surface."""
+    got = failed_checks(breakdowns["glm-5-2"], limit=50)
+    assert any(c.axis == "synthesis" for c in got)
+
+
+def test_failed_checks_empty_for_a_perfect_board_row(breakdowns):
+    """Gemini 3.6 Flash scored 100.0 objective — nothing should be reported failed."""
+    assert failed_checks(breakdowns["gemini-3-6-flash"]) == []
+
+
+def test_failed_checks_tolerates_a_breakdown_with_no_steps():
+    assert failed_checks({"objective": {}}) == []
+
+
+def test_failed_checks_treats_a_missing_passed_key_as_unknown_not_failed():
+    """Fail-honest: an unknown check must never be reported to a lab as a failure."""
+    bd = {"objective": {"steps": [{"index": 0, "checks": [{"label": "x", "axis": "a"}]}]}}
+    assert failed_checks(bd) == []
+
+
+def test_resolve_transcript_returns_none_when_path_is_none(tmp_path):
+    assert resolve_transcript({"m": None}, "m", tmp_path) is None
+
+
+def test_resolve_transcript_returns_none_when_model_absent(tmp_path):
+    assert resolve_transcript({}, "missing-model", tmp_path) is None
+
+
+def test_resolve_transcript_returns_none_when_file_missing(tmp_path):
+    paths = {"m": "artifacts/arena/85/wf/m/transcript.json"}
+    assert resolve_transcript(paths, "m", tmp_path) is None
+
+
+def test_resolve_transcript_returns_path_when_file_exists(tmp_path):
+    rel = "artifacts/arena/85/wf/m/transcript.json"
+    target = tmp_path / rel
+    target.parent.mkdir(parents=True)
+    target.write_text("{}", encoding="utf-8")
+    assert resolve_transcript({"m": rel}, "m", tmp_path) == rel
+
+
+def test_banked_run_ids_come_from_merged_from_not_a_hardcoded_range():
+    """Regression: a 85-93 guess lost runs 81 and 84, so doubao and both
+    deepseeks rendered a false "trace not banked" while their files existed."""
+    configs = [{"merged_from": [81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 93]}]
+    runs = banked_run_ids(configs, 94)
+    assert 81 in runs and 84 in runs
+    assert runs == [81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 93, 94]
+
+
+def test_banked_run_ids_falls_back_to_the_run_itself():
+    """An unfolded run has no merged_from; it is its own transcript source."""
+    assert banked_run_ids([{}], 94) == [94]
+    assert banked_run_ids([], 94) == [94]
+
+
+def test_banked_run_ids_unions_across_matches():
+    configs = [{"merged_from": [81]}, {"merged_from": [84]}]
+    assert banked_run_ids(configs, 94) == [81, 84, 94]
+
+
+def test_latest_transcript_paths_prefers_the_highest_run_id():
+    """A re-run supersedes: GLM has a broken run #91 trace and a clean #93 one."""
+    rows = [
+        (91, "glm-5-2", "artifacts/arena/91/wf/glm-5-2/transcript.json"),
+        (93, "glm-5-2", "artifacts/arena/93/wf/glm-5-2/transcript.json"),
+    ]
+    assert latest_transcript_paths(rows)["glm-5-2"].startswith("artifacts/arena/93/")
+    # Order of the input rows must not change the answer.
+    assert latest_transcript_paths(rows[::-1])["glm-5-2"].startswith("artifacts/arena/93/")
+
+
+def test_latest_transcript_paths_skips_null_paths():
+    rows = [(94, "m", None), (85, "m", "artifacts/arena/85/wf/m/transcript.json")]
+    assert latest_transcript_paths(rows)["m"].startswith("artifacts/arena/85/")
+
+
+def test_latest_transcript_paths_omits_a_model_with_only_nulls():
+    assert latest_transcript_paths([(94, "m", None)]) == {}
+
+
+def _target(**kw) -> Target:
+    base = dict(lab="Zhipu", tier="B1", model_ids=("glm-5-2",),
+                channels=("https://example.invalid/issues",),
+                serving={"gateway": "ZenMux", "protocol": "anthropic"},
+                anomaly=None, interop_note=None)
+    base.update(kw)
+    return Target(**base)  # type: ignore[arg-type]
+
+
+def _rows(model_id="glm-5-2"):
+    return [{"model_id": model_id, "mean_objective": 62.9, "match_count": 2,
+             "card_mean": {"ovr": 64, "base_ovr": 64, "con": 99, "GRD": 70,
+                           "ADH": 99, "SYN": 0, "EFF": 64, "PRC": 58}}]
+
+
+def test_render_includes_the_card_stats():
+    md = render_scorecard(target=_target(), rows=_rows(), checks={},
+                          transcripts={}, run_id=94)
+    for stat in ("OVR", "GRD", "ADH", "SYN", "EFF", "PRC", "CON"):
+        assert stat in md
+    # ovr 64 and con 99 must be read from the lowercase keys, not rendered n/a.
+    assert "| 64 |" in md
+    assert "n/a" not in md
+
+
+def test_render_asks_the_serving_question():
+    md = render_scorecard(target=_target(), rows=_rows(), checks={},
+                          transcripts={}, run_id=94)
+    assert "serve" in md.lower()
+
+
+def test_render_never_pitches():
+    """Etiquette rule: no job or consulting ask, and no velocity claims, ever."""
+    md = render_scorecard(target=_target(interop_note="an interop symptom",
+                                         anomaly="something anomalous"),
+                          rows=_rows(),
+                          checks={"glm-5-2": [FailedCheck("l", "synthesis", "5")]},
+                          transcripts={"glm-5-2": None}, run_id=94).lower()
+    for banned in ("hiring", "hire", "consult", "opportunit", "resume", "cv",
+                   "lines of code", "commits", "portfolio of work"):
+        assert banned not in md, f"banned phrase {banned!r} appeared in a card"
+
+
+def test_interop_note_rendered_verbatim_only_when_present():
+    plain = render_scorecard(target=_target(interop_note=None), rows=_rows(),
+                             checks={}, transcripts={}, run_id=94)
+    flagged = render_scorecard(
+        target=_target(interop_note="tool-call ids arrived EMPTY"),
+        rows=_rows(), checks={}, transcripts={}, run_id=94)
+    assert "interoperability finding" not in plain
+    assert "tool-call ids arrived EMPTY" in flagged
+
+
+def test_serving_config_is_always_disclosed():
+    """The serving question is unanswerable without it."""
+    md = render_scorecard(target=_target(), rows=_rows(), checks={},
+                          transcripts={}, run_id=94)
+    assert "How it was served" in md
+    assert "ZenMux" in md and "anthropic" in md
+
+
+def test_trials_come_from_n_trials_not_the_folded_match_count():
+    """On a folded board match_count is always 1; the real trial count is 2."""
+    md = render_scorecard(target=_target(), rows=_rows(), checks={},
+                          transcripts={}, run_id=94, trials={"glm-5-2": 2})
+    assert "trials per model, folded into this row**: 2" in md
+
+
+def test_trials_line_omitted_when_unknown():
+    md = render_scorecard(target=_target(), rows=_rows(), checks={},
+                          transcripts={}, run_id=94, trials={"glm-5-2": 0})
+    assert "trials per model" not in md
+
+
+def test_absent_serving_config_is_stated_not_omitted():
+    md = render_scorecard(target=_target(serving={}), rows=_rows(), checks={},
+                          transcripts={}, run_id=94)
+    assert "not recorded" in md.lower()
+
+
+def test_missing_transcript_states_the_absence():
+    md = render_scorecard(target=_target(), rows=_rows(), checks={},
+                          transcripts={"glm-5-2": None}, run_id=94)
+    assert "no stored trace" in md.lower()
+
+
+def test_held_transcript_is_offered_not_linked_to_a_local_path():
+    """`artifacts/` is untracked, so a path is unreachable to the recipient."""
+    md = render_scorecard(target=_target(), rows=_rows(), checks={},
+                          transcripts={"glm-5-2": "artifacts/arena/93/x.json"},
+                          run_id=94)
+    assert "artifacts/arena/93/x.json" not in md, "must not print a local path"
+    assert "send yours directly" in md.lower()
+    assert "no stored trace" not in md.lower()
+
+
+def test_evidence_points_at_the_public_benchmark_definition():
+    """The benchmark IS public — manifest, truth values and fixtures are all
+    committed. The card must invite verification, not imply secrecy."""
+    md = render_scorecard(target=_target(), rows=_rows(), checks={},
+                          transcripts={}, run_id=94,
+                          workflow_id="high-board-portfolio-review-day")
+    for artefact in (".md", ".truth.json", ".fixtures.json"):
+        assert f"high-board-portfolio-review-day{artefact}" in md
+    assert "docs/arena/" in md
+
+
+def test_evidence_never_claims_the_benchmark_is_secret():
+    """Regression: an earlier draft justified withholding traces by claiming
+    they held prompts and expected values that would invalidate the benchmark.
+    Both are published in the repo, so that rationale was simply false."""
+    md = render_scorecard(target=_target(), rows=_rows(), checks={},
+                          transcripts={"glm-5-2": "artifacts/x.json"},
+                          run_id=94).lower()
+    for false_claim in ("invalidate the benchmark", "burn the benchmark",
+                        "exact prompts and expected values"):
+        assert false_claim not in md
+
+
+def test_failures_show_observation_not_just_expectation():
+    md = render_scorecard(
+        target=_target(), rows=_rows(),
+        checks={"glm-5-2": [FailedCheck(
+            label="tool: list_reports", axis="procedural", step="6",
+            detail="tool list_reports not matched",
+            instruction="Open the governance report and cite its type.")]},
+        transcripts={}, run_id=94)
+    assert "tool: list_reports" in md          # expected
+    assert "tool list_reports not matched" in md  # observed
+    assert "Open the governance report" in md     # the instruction
+
+
+def test_failure_count_is_stated_when_truncated():
+    many = [FailedCheck(f"check {i}", "synthesis", "7", f"detail {i}", "do a thing")
+            for i in range(13)]
+    md = render_scorecard(target=_target(), rows=_rows(),
+                          checks={"glm-5-2": many}, transcripts={},
+                          run_id=94, shown_failures=3)
+    assert "13 failed checks" in md
+    assert "3 shown below" in md
+
+
+def test_failures_grouped_by_step():
+    md = render_scorecard(
+        target=_target(), rows=_rows(),
+        checks={"glm-5-2": [
+            FailedCheck("a", "grounding", "5", "d1", "instruction five"),
+            FailedCheck("b", "procedural", "6", "d2", "instruction six"),
+            FailedCheck("c", "synthesis", "6", "d3", "instruction six"),
+        ]},
+        transcripts={}, run_id=94)
+    assert md.count("**Step 6**") == 1, "step 6 must appear once, not per check"
+    assert "**Step 5**" in md
+
+
+def test_missing_card_is_reported_not_fabricated():
+    rows = [{"model_id": "glm-5-2", "mean_objective": 62.9, "match_count": 2,
+             "card_mean": None}]
+    md = render_scorecard(target=_target(), rows=rows, checks={},
+                          transcripts={}, run_id=94)
+    assert "not available" in md.lower()
+    assert "OVR 0" not in md
+
+
+def test_failed_checks_are_listed_with_axis_and_step():
+    md = render_scorecard(
+        target=_target(), rows=_rows(),
+        checks={"glm-5-2": [FailedCheck("answer quotes 238.04", "grounding", "5")]},
+        transcripts={}, run_id=94)
+    assert "answer quotes 238.04" in md
+    assert "grounding" in md
+    assert "5" in md
+
+
+def test_unknown_tier_is_rejected(tmp_path):
+    bad = tmp_path / "targets.yaml"
+    bad.write_text(
+        "targets:\n"
+        "  - lab: Nowhere\n"
+        "    tier: Z\n"
+        "    model_ids: [x]\n"
+        "    channels: [y]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="unknown tier"):
+        load_targets(bad)
