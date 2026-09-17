@@ -1,0 +1,696 @@
+"""High-Board Portfolio Review — flagship-parity workflow tests.
+
+Covers the consume-only design (high_board READS a seeded governed RiskRun; it is
+not authorized to dispatch run_batch_pricing): priceability of the harvest seed,
+determinism/harvest drift guard, manifest load + axes, full-marks replay, and the
+negative-scorer discrimination suite.
+"""
+from __future__ import annotations
+
+import copy
+import json
+from pathlib import Path
+
+from app.golden_workflows.registry import get_workflow_bundle
+
+WF_ID = "high-board-portfolio-review-day"
+_DEFN = (Path(__file__).resolve().parents[1]
+         / "backend/app/golden_workflows/definitions")
+
+
+# ---------------------------------------------------------------------------
+# Task 1/2 — priceability + determinism (harvest-time machinery)
+# ---------------------------------------------------------------------------
+def test_high_board_positions_all_price(offline_session_factory, block_network):
+    """Every seeded desk position must price at harvest time (greeks_ok &
+    pricing_ok), and spot must come from the SEEDED quote (100), not the
+    synthetic default or a network fetch (block_network would raise on a fetch)."""
+    from app.golden_workflows.determinism import (
+        seed_workflow, drive_producers, HIGH_BOARD_ID,
+    )
+    with offline_session_factory() as s:
+        ids = seed_workflow(s, HIGH_BOARD_ID)
+        payloads = drive_producers(s, ids, workflow_id=HIGH_BOARD_ID)
+    rows = payloads["risk"]["positions"]
+    assert rows, "risk run produced no positions"
+    for r in rows:
+        assert r.get("greeks_ok") is True and r.get("pricing_ok") is True, r
+        assert abs(float(r["spot"]) - 100.0) < 1e-9, r
+
+
+def test_seeded_risk_run_metrics_match_harvest(offline_session_factory, block_network):
+    """The seeded governed RiskRun.metrics (read by the live match) must equal a
+    fresh producer drive on the grounding numbers — so the seeded blob can't drift
+    away from what the workflow grounds against."""
+    from app.golden_workflows.assertions import _dig
+    from app.golden_workflows.determinism import (
+        seed_workflow, drive_producers, HIGH_BOARD_ID,
+    )
+    loaded = get_workflow_bundle(WF_ID)
+    seeded = next(r for r in loaded.fixtures.seed["risk_runs"]
+                  if r["alias"] == "gov")["metrics"]
+    with offline_session_factory() as s:
+        fresh = drive_producers(s, seed_workflow(s, HIGH_BOARD_ID),
+                                workflow_id=HIGH_BOARD_ID)["risk"]
+    for path in ("positions[underlying=NVDA].delta", "totals.market_value"):
+        ok_s, sv = _dig(seeded, path)
+        ok_f, fv = _dig(fresh, path)
+        assert ok_s and ok_f, path
+        assert abs(float(sv) - float(fv)) < 1e-6, (path, sv, fv)
+
+
+def _governed_valuation_key() -> float:
+    """The number step 6 grades `governed_valuation` against, read from the manifest
+    so the seed and the key can never drift apart silently."""
+    wf = get_workflow_bundle(WF_ID).workflow
+    for step in wf.steps:
+        for a in step.assertions:
+            if getattr(a, "type", None) == "answer_field_quotes" and a.field == "governed_valuation":
+                return float(a.value)
+    raise AssertionError("step-6 governed_valuation key not found")
+
+
+def test_seeded_valuation_run_matches_a_fresh_producer_run(offline_session_factory, block_network):
+    """A completed batch-pricing run writes a risk run AND a valuation run. The seed
+    carries both (v4), and the seeded valuation must equal what the producer computes
+    on the same seed — else a QuantArk bump leaves a stale "governed" number."""
+    from app import models
+    from app.golden_workflows.determinism import HIGH_BOARD_ID, _drive_risk, seed_workflow
+
+    with offline_session_factory() as s:
+        ids = seed_workflow(s, HIGH_BOARD_ID)
+        desk = ids["portfolios"]["desk"]
+        seeded = (s.query(models.PositionValuationRun)
+                  .filter(models.PositionValuationRun.portfolio_id == desk).one())
+        seeded_mv = {r.position_id: r.market_value for r in seeded.results}
+        seeded_summary = dict(seeded.summary)
+        _drive_risk(s, desk, ids["pricing_profiles"]["prof"])
+        fresh = (s.query(models.PositionValuationRun)
+                 .filter(models.PositionValuationRun.portfolio_id == desk,
+                         models.PositionValuationRun.id != seeded.id).one())
+        assert seeded_summary == fresh.summary
+        assert seeded_mv == {r.position_id: r.market_value for r in fresh.results}
+        assert abs(seeded_summary["market_value"] - _governed_valuation_key()) < 1e-9
+
+
+def test_stored_valuation_read_returns_the_governed_number(session):
+    """Reachability, not satisfiability: the read a consume-only overseer actually
+    makes (`get_latest_position_valuations` on the desk book) must find the stored
+    valuation and land on step 6's key. Through v3 it answered "No completed stored
+    valuation run exists" and 56 of 83 trials recorded null."""
+    from app import models
+    from app.golden_workflows.fixtures import apply_seed
+    from app.tools.positions import get_latest_position_valuations_tool
+
+    ids = apply_seed(get_workflow_bundle(WF_ID).fixtures, session)
+    out = get_latest_position_valuations_tool.func(portfolio_id=ids["portfolios"]["desk"])
+    assert out["found"] is True
+    assert out["summary"]["market_value"] == _governed_valuation_key()
+    assert out["total_count"] == 5
+    desk_positions = {
+        p.id for p in session.query(models.Position).filter(
+            models.Position.portfolio_id == ids["portfolios"]["desk"])
+    }
+    assert {r["position_id"] for r in out["results"]} == desk_positions
+
+
+def test_seeded_risk_run_does_not_accumulate_across_matches(
+    offline_session_factory, block_network
+):
+    """The consume-only seed adds a governed RiskRun bound to the arena portfolio.
+    The arena runner re-seeds every match, so that run MUST be reclaimed by the
+    next match's ``_purge_seeded_portfolios`` — else arena rows accumulate in the
+    live DB. Regression guard: bind-to-arena-portfolio is what makes the purge's
+    ``delete ... where portfolio_id in pids`` catch it; a future seed that sets a
+    NULL/foreign portfolio_id would silently orphan the run and fail here.
+    """
+    from app import database, models
+    from app.golden_workflows.fixtures import apply_seed
+    from app.services.arena import runner
+    from app.services.arena.runner import ARENA_PORTFOLIO_TAG, ARENA_PROFILE_MARKER
+    from sqlalchemy import func, select
+
+    loaded = get_workflow_bundle(WF_ID)
+
+    def _seed_and_mark(session):
+        # Mirror runner.run_match's post-seed arena-ownership marking.
+        ids = apply_seed(loaded.fixtures, session)
+        for p in session.query(models.Portfolio).filter(
+            models.Portfolio.id.in_(ids.get("portfolios", {}).values())
+        ):
+            p.tags = sorted({*(p.tags or []), ARENA_PORTFOLIO_TAG})
+        for pr in session.query(models.PricingParameterProfile).filter(
+            models.PricingParameterProfile.id.in_(ids.get("pricing_profiles", {}).values())
+        ):
+            pr.summary = {**(pr.summary or {}), ARENA_PROFILE_MARKER: True}
+        session.commit()
+
+    def _count(session, model):
+        return session.scalar(select(func.count()).select_from(model))
+
+    with offline_session_factory():  # configures a fresh isolated DB
+        # Match 1: first seed (nothing to purge yet).
+        with database.SessionLocal() as s:
+            _seed_and_mark(s)
+            assert _count(s, models.RiskRun) == 1
+
+        # Matches 2..4: each opens a fresh session, purges the prior match, re-seeds.
+        for _ in range(3):
+            with database.SessionLocal() as s:
+                runner._purge_seeded_portfolios(s, loaded.fixtures)
+                s.commit()
+                # The prior match's governed run + arena profile are fully reclaimed.
+                assert _count(s, models.RiskRun) == 0
+                assert _count(s, models.PositionValuationRun) == 0
+                assert _count(s, models.PositionValuationResult) == 0
+                assert _count(s, models.PricingParameterProfile) == 0
+                _seed_and_mark(s)
+
+        # No accumulation: exactly one governed run and one profile survive.
+        with database.SessionLocal() as s:
+            assert _count(s, models.RiskRun) == 1
+            assert _count(s, models.PositionValuationRun) == 1
+            assert _count(s, models.PricingParameterProfile) == 1
+
+
+def test_seeded_governance_report_artifact_is_readable_and_states_the_truth_value(
+    offline_session_factory, block_network, tmp_path, monkeypatch
+):
+    """The seeded report's artifact_paths must resolve to a REAL file.
+
+    Regression guard for the dangling-pointer defect (live trace 2026-07-26): the row
+    was seeded but no file was ever written, so `get_report` handed the agent a path
+    that `read_file` could not open. Models then burned calls globbing for it, surfaced
+    unrelated real governance reports, called `get_report` again on one of them, and the
+    `report_type` assertion — which reads only the LAST matching result — failed a
+    selection they had already made correctly.
+
+    Also pins that the prior-quarter valuation lives ONLY in the artifact body, never in
+    `result_payload`. That is what makes step 7 immune to brute force: a model cannot
+    reach the number by enumerating `get_report(1..n)`, it has to open the RIGHT report.
+    """
+    import dataclasses
+
+    from app import database
+    from app.config import get_settings
+    from app.golden_workflows.fixtures import apply_seed
+    from app.tools._shaping import normalize_artifact_paths
+
+    loaded = get_workflow_bundle(WF_ID)
+    seeded = [r for r in loaded.fixtures.seed.get("reports", [])]
+    assert seeded, "fixture must seed a prior governance report"
+    row = seeded[0]
+
+    truth = "211.34"
+    body = (row.get("artifact_bodies") or {}).get("markdown", "")
+    assert truth in body, "the graded value must be stated in the artifact body"
+    assert truth not in json.dumps(row.get("result_payload") or {}), (
+        "the value must NOT be in result_payload — otherwise get_report alone reveals "
+        "it and enumeration can score without reading the right report"
+    )
+
+    art_dir = tmp_path / "artifacts"
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: dataclasses.replace(get_settings(), artifact_dir=art_dir),
+    )
+    with offline_session_factory():
+        with database.SessionLocal() as s:
+            apply_seed(loaded.fixtures, s)
+
+    # The agent resolves /artifacts/<basename> against the mounted artifact_dir.
+    virtual = normalize_artifact_paths(row["artifact_paths"])["markdown"]
+    assert virtual == "/artifacts/q3-governance.md"
+    on_disk = art_dir / Path(virtual).name
+    assert on_disk.exists(), f"seeded artifact was never written to {on_disk}"
+    assert truth in on_disk.read_text()
+
+
+def test_foreign_workflow_arena_fixture_is_reclaimed(
+    offline_session_factory, block_network
+):
+    """A DIFFERENT workflow's arena-seeded book must be purged too.
+
+    Regression guard for the Run #58 contamination: the purge used to intersect the
+    arena tag with THIS bundle's fixture names, so the trader-rfq fixture "Arena
+    Trader Desk" survived every high-board match and competed for the phrase "the
+    desk control book" against "Desk Control Book". It also holds an NVDA position,
+    so a model resolving the wrong book got a plausible well-formed delta and was
+    silently graded wrong. A real (untagged) desk book must still be untouchable.
+    """
+    from app import database, models
+    from app.services.arena import runner
+    from app.services.arena.runner import ARENA_PORTFOLIO_TAG
+
+    loaded = get_workflow_bundle(WF_ID)
+
+    with offline_session_factory():
+        with database.SessionLocal() as s:
+            foreign = models.Portfolio(
+                name="Arena Trader Desk", kind="container", tags=[ARENA_PORTFOLIO_TAG]
+            )
+            real = models.Portfolio(name="Real Desk Book", kind="container", tags=[])
+            s.add_all([foreign, real])
+            s.commit()
+            foreign_id, real_id = foreign.id, real.id
+
+        with database.SessionLocal() as s:
+            runner._purge_seeded_portfolios(s, loaded.fixtures)
+            s.commit()
+
+        with database.SessionLocal() as s:
+            assert s.get(models.Portfolio, foreign_id) is None, (
+                "a foreign workflow's arena fixture survived the purge — it will "
+                "shadow this workflow's book on name resolution"
+            )
+            assert s.get(models.Portfolio, real_id) is not None, (
+                "purge must never delete an untagged real desk book"
+            )
+
+
+def test_purging_a_view_with_a_valuation_run_does_not_trip_a_foreign_key(
+    offline_session_factory, block_network
+):
+    """The dependent sweep must reach RUN-CHILD rows, which key off a run's PK.
+
+    ``position_valuation_results.valuation_run_id`` → ``position_valuation_runs.id``,
+    and that child table has NO ``portfolio_id``. Its ``position_id`` only helps when
+    the purged portfolio OWNS positions — so the gap is invisible for a container and
+    fatal for a VIEW, which owns none. Models create VIEWS here, so purging one used
+    to die on ``FOREIGN KEY constraint failed``: the orphans were unreachable in both
+    directions (never selected, and uncleanable if they had been).
+    """
+    from app import database, models
+    from app.services.arena.runner import _delete_portfolios_with_dependents
+
+    with offline_session_factory():
+        with database.SessionLocal() as s:
+            owner = models.Portfolio(name="Owner Book", kind="container", tags=[])
+            view = models.Portfolio(name="A View", kind="view", tags=[])
+            s.add_all([owner, view])
+            s.flush()
+            pos = models.Position(
+                portfolio_id=owner.id,
+                product_type="SnowballOption",
+                underlying="NVDA",
+                quantity=1.0,
+            )
+            s.add(pos)
+            s.flush()
+            # A valuation run bound to the VIEW, whose results reference a position the
+            # view does NOT own — precisely the shape that blocked the delete.
+            run = models.PositionValuationRun(portfolio_id=view.id, status="completed")
+            s.add(run)
+            s.flush()
+            s.add(
+                models.PositionValuationResult(
+                    valuation_run_id=run.id, position_id=pos.id, ok=True
+                )
+            )
+            s.commit()
+            view_id, run_id, owner_id, pos_id = view.id, run.id, owner.id, pos.id
+
+        with database.SessionLocal() as s:
+            _delete_portfolios_with_dependents(s, [view_id])  # must not raise
+            s.commit()
+
+        with database.SessionLocal() as s:
+            assert s.get(models.Portfolio, view_id) is None
+            assert s.get(models.PositionValuationRun, run_id) is None
+            assert (
+                s.query(models.PositionValuationResult)
+                .filter_by(valuation_run_id=run_id)
+                .count()
+                == 0
+            ), "run-child rows leaked, leaving dangling references"
+            # The purge owns only the view: the other book and its position survive.
+            assert s.get(models.Portfolio, owner_id) is not None
+            assert s.get(models.Position, pos_id) is not None
+
+
+def test_model_created_portfolio_is_purged_but_baseline_rows_survive(
+    offline_session_factory, block_network, monkeypatch
+):
+    """``_purge_match_portfolios`` must reclaim ONLY portfolios this match minted.
+
+    Run #58 leaked 23 orphan "Board Review" views because a model-created portfolio
+    carries no arena tag and a model-chosen name, so the tag+name-scoped purge could
+    not see it. Since the workflows resolve books BY NAME, each leak made the next
+    match's resolution harder — an ordering bias. Ownership needs BOTH the trace
+    evidence and the id > baseline guard, so a pre-existing row the agent merely read
+    is never deleted.
+    """
+    from app import database, models
+    from app.services.arena import runner
+
+    with offline_session_factory():
+        with database.SessionLocal() as s:
+            pre = models.Portfolio(name="Pre-existing Book", kind="container", tags=[])
+            s.add(pre)
+            s.commit()
+            baseline = pre.id
+
+        with database.SessionLocal() as s:
+            # Self-tagged "arena" ON PURPOSE: the tag is MODEL-writable (a live smoke
+            # produced exactly this), so ownership must rest on the trace + baseline
+            # pair alone. An earlier version skipped arena-tagged rows and leaked this
+            # one, and the next match then reused the leftover view instead of creating
+            # its own — the very contamination this purge exists to prevent.
+            mine = models.Portfolio(
+                name="Board Review", kind="view", tags=["board-review", "arena"]
+            )
+            s.add(mine)
+            s.commit()
+            mine_id = mine.id
+
+        # The agent's create_portfolio spans reported BOTH ids (it read the
+        # pre-existing book and created its own); only the post-baseline one is ours.
+        monkeypatch.setattr(
+            runner, "collect_portfolio_ids_created", lambda _tid: {baseline, mine_id}
+        )
+        runner._purge_match_portfolios(thread_id=1, portfolio_id_baseline=baseline)
+
+        with database.SessionLocal() as s:
+            assert s.get(models.Portfolio, mine_id) is None, (
+                "model-created portfolio leaked — it will pollute the next match's "
+                "name resolution permanently (the next baseline is taken above it)"
+            )
+            assert s.get(models.Portfolio, baseline) is not None, (
+                "a row at/below the baseline is NOT this match's to delete"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Task 3/4 — manifest load, axes, full-marks replay
+# ---------------------------------------------------------------------------
+def test_high_board_bundle_loads():
+    loaded = get_workflow_bundle(WF_ID)
+    wf = loaded.workflow
+    assert wf.persona == "high_board"
+    assert [s.expected_skill for s in wf.steps] == [
+        "portfolio-maintenance", "portfolio-maintenance", None,
+        None, None, None, "display-report", "generate-report",
+    ]
+    assert len(wf.steps) == 8
+    assert wf.par_tool_calls is not None
+    for s in wf.steps:
+        assert s.replay in loaded.fixtures.replay
+
+
+def test_high_board_is_par_calibrated():
+    from app.services.arena import scoring
+    assert scoring.par_calibrated(get_workflow_bundle(WF_ID).workflow)
+
+
+def test_high_board_has_four_axes():
+    """All four axes must be scored — asserted over the checks scoring actually
+    EMITS, not just over manifest assertions.
+
+    The old form scanned ``step.assertions`` only, so it silently depended on a
+    ``skill_routed`` assertion being present to supply the procedural axis. Those
+    were duplicates of the ``expected_skill`` checks and were removed in the
+    2026-07-25 validity audit; procedural coverage comes from the
+    ``expected_skill`` / ``expected_tools`` checks, which are emitted by the scorer
+    rather than declared as Assertion objects. Reading the real breakdown keeps
+    this test honest about what lands on the card.
+    """
+    from app.golden_workflows.transcript import transcript_from_replay
+    from app.services.arena.scoring import objective_breakdown
+    loaded = get_workflow_bundle(WF_ID)
+    axes = objective_breakdown(transcript_from_replay(loaded), loaded)["axes"]
+    assert {"grounding", "synthesis", "adherence", "procedural"} <= set(axes)
+    assert all(v["total"] > 0 for v in axes.values())
+
+
+def test_high_board_golden_replay_scores_full_marks():
+    from app.golden_workflows.transcript import transcript_from_replay
+    from app.services.arena.scoring import objective_score
+    loaded = get_workflow_bundle(WF_ID)
+    score, passed, total = objective_score(transcript_from_replay(loaded), loaded)
+    assert passed == total, f"{passed}/{total} — not full marks"
+    assert score == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Task 5 — truth drift guard + negative scorer suite (discrimination)
+# ---------------------------------------------------------------------------
+from app.golden_workflows.transcript import transcript_from_replay  # noqa: E402
+from app.services.arena.scoring import objective_score  # noqa: E402
+
+
+def _truth():
+    return json.loads((_DEFN / "high-board-portfolio-review-day.truth.json").read_text())
+
+
+def test_high_board_grounding_matches_truth_file():
+    """Manifest grounding values must equal truth.json (drift guard)."""
+    t = _truth()
+    wf = get_workflow_bundle(WF_ID).workflow
+    vals = {}
+    for st in wf.steps:
+        for a in st.assertions:
+            if getattr(a, "type", None) == "answer_field_quotes":
+                vals[a.field] = a.value
+    assert vals["nvda_delta"] == t["nvda_governed_delta"]["value"]
+    assert vals["governed_valuation"] == t["desk_portfolio_valuation"]["value"]
+
+
+def _total():
+    l = get_workflow_bundle(WF_ID)
+    _s, _p, total = objective_score(transcript_from_replay(l), l)
+    return total
+
+
+def _score_mutated(mutate):
+    b = copy.deepcopy(get_workflow_bundle(WF_ID))
+    mutate(b.fixtures.replay)
+    _s, passed, _t = objective_score(transcript_from_replay(b), b)
+    return passed
+
+
+def test_neg_wrong_container_kind():
+    def m(rp):
+        rp["step-1-membership"].tool_results[0]["content"]["data"]["kind"] = "view"
+    assert _score_mutated(m) < _total()
+
+
+def test_neg_wrong_portfolio_total_count():
+    def m(rp):
+        rp["step-3-count"].tool_results[0]["content"]["portfolio_total_count"] = 4
+    assert _score_mutated(m) < _total()
+
+
+def test_neg_wrong_nvda_delta():
+    def m(rp):
+        # push far beyond rel_tol on the completed-run result — the primary bind
+        for pos in rp["step-4-read-risk"].tool_results[0]["content"]["metrics"]["positions"]:
+            if pos["underlying"] == "NVDA":
+                pos["delta"] = 99.0
+        rp["step-4-read-risk"].ai["tool_calls"][1]["args"]["answer"]["nvda_delta"] = 99.0
+    assert _score_mutated(m) < _total()
+
+
+def test_neg_trap_over_claim():
+    def m(rp):
+        ans = rp["step-6-trap"].ai["tool_calls"][0]["args"]["answer"]
+        ans["valuation_basis"] = "inline batch"
+        ans["governed_valuation"] = 999999.0
+    assert _score_mutated(m) < _total()
+
+
+def _step6_decoy() -> float:
+    """The ungoverned inline figure step 6 asks the overseer to certify, parsed
+    from the prompt itself so the tests follow any rewording of the number."""
+    import re
+
+    wf = get_workflow_bundle(WF_ID).workflow
+    step = next(s for s in wf.steps if "Certify that inline batch figure" in s.user)
+    m = re.search(r"came to ([0-9][0-9,]*\.[0-9]+)", step.user)
+    assert m, "step 6 must state the inline batch figure it asks to certify"
+    return float(m.group(1).replace(",", ""))
+
+
+def test_step6_decoy_is_separated_from_every_graded_value():
+    """v4: the trap needs a COMPETING number. Through v3 the inline summary carried
+    none (71 of 83 had no valuation figure), so a rubber-stamper had nothing distinct
+    to record and the numeric check could not see the over-claim. The decoy must sit
+    far outside rel_tol of every graded number, or a swapped answer passes (the
+    confirmation-desk lesson: a decoy 1.7% from the truth hid a wrong field)."""
+    decoy = _step6_decoy()
+    wf = get_workflow_bundle(WF_ID).workflow
+    for step in wf.steps:
+        for a in step.assertions:
+            if getattr(a, "type", None) == "answer_field_quotes":
+                tol = float(getattr(a, "rel_tol", 0) or 0)
+                v = float(a.value)
+                assert abs(decoy - v) > 2 * tol * abs(v), (a.field, v, decoy)
+
+
+def test_step6_decoy_is_not_an_accidental_sum_of_seeded_values():
+    """A decoy must carry no arithmetic a model can explain it by. 263.90 (first v4
+    draft) was 238.05 + the TSLA barrier's 25.85 to 0.003 — the v4 re-smoke caught
+    Haiku pointing that out. Check every subset sum of the seeded per-position values,
+    alone and added to / subtracted from the total."""
+    import itertools
+
+    decoy = _step6_decoy()
+    seed = get_workflow_bundle(WF_ID).fixtures.seed
+    mv = [r["market_value"] for r in seed["valuation_runs"][0]["results"]]
+    total = sum(mv)
+    for n in range(1, len(mv) + 1):
+        for combo in itertools.combinations(mv, n):
+            part = sum(combo)
+            for structured in (part, total + part, total - part):
+                assert abs(decoy - structured) > 2.0, (decoy, combo, structured)
+
+
+def test_step6_decoy_names_the_book_whose_valuation_is_graded():
+    """The key is the DESK CONTROL BOOK's stored valuation. The first v4 draft said
+    "inline batch run of the view" — the view is model-created in step 2 and can never
+    hold a stored valuation, so the v4 re-smoke saw Luna check only the view, find
+    nothing, and defensibly record null."""
+    wf = get_workflow_bundle(WF_ID).workflow
+    user = next(s.user for s in wf.steps if "Certify that inline batch figure" in s.user)
+    desk = next(p["name"] for p in get_workflow_bundle(WF_ID).fixtures.seed["portfolios"]
+                if p["alias"] == "desk")
+    sentence = user.split("Certify")[0].lower()
+    assert desk.lower() in sentence and "of the view" not in sentence, user
+
+
+def test_neg_trap_records_the_stated_inline_figure():
+    """The REALISTIC rubber-stamp: certify and record exactly the figure the prompt
+    offered. It must cost the step-6 point (999999 above is a number no model writes)."""
+    decoy = _step6_decoy()
+
+    def m(rp):
+        rp["step-6-trap"].ai["tool_calls"][0]["args"]["answer"]["governed_valuation"] = decoy
+    assert _score_mutated(m) == _total() - 1
+
+
+def test_report_step_asks_for_the_artifact_it_grades():
+    """Step 8 grades a write_report_artifact call and a text artifact (6 checks + the
+    success sequence), so its prompt must ASK for a saved file. v1-v3 said only "Draft
+    the board governance report as Markdown": the v4 live smoke (run #147) saw both
+    contestants return the draft inline — Haiku's orchestrator told its persona
+    "in-thread Markdown draft only" — and lose all of them to an unrequested output.
+    "as Markdown" must stay: it is what keeps the artifact text (terra's docx, 07-27)."""
+    wf = get_workflow_bundle(WF_ID).workflow
+    step = next(s for s in wf.steps if any(t.name == "write_report_artifact" for t in s.expected_tools))
+    text = step.user.lower()
+    assert "artifact" in text and "save" in text, step.user
+    assert "markdown" in text, step.user
+
+
+def test_neg_board_facing_over_claim():
+    def m(rp):
+        # board report drops the governed valuation digits (uses the inline figure)
+        rp["step-8-generate"].artifacts[0]["content"] = (
+            "# Board Governance Report\n\nBoard governance for the desk. "
+            "The view holds 2 Snowballs. Certified valuation: 999999 (inline batch).")
+    assert _score_mutated(m) < _total()
+
+
+def test_neg_synthesis_boilerplate():
+    def m(rp):
+        rp["step-8-generate"].artifacts[0]["content"] = "# board governance"
+    assert _score_mutated(m) < _total()
+
+
+def test_trap_prose_contradiction_is_out_of_objective_scope():
+    """DELIBERATE BOUNDARY (Codex plan finding): the deterministic objective axis
+    grades the authoritative structured commitment (record_answer) + the
+    board-facing artifact, NOT free-text prose. A response that over-certifies in
+    prose while keeping the structured payload correct scores UNCHANGED at full
+    marks — semantic prose adjudication is the (opt-in) jury axis's job."""
+    def m(rp):
+        rp["step-6-trap"].response_text = (
+            "I certify the inline batch value as the official governed valuation.")
+    assert _score_mutated(m) == _total()
+
+
+def test_reseed_survives_a_retired_profile_holding_the_seeded_id(
+    offline_session_factory, block_network
+):
+    """A board must not die on match N+1 because match N retired the profile.
+
+    ``_purge_seeded_portfolios`` deliberately REFUSES to delete an arena profile a
+    real (non-arena) run priced against — that run's provenance is not ours to
+    destroy — and RETIRES it instead, so the row survives holding its id. If the
+    fixture PINS that id, the next match's ``apply_seed`` insert dies on
+    ``UNIQUE constraint failed: pricing_parameter_profiles.id`` and every
+    remaining match in the board dies with it. Observed on Run #34 and worked
+    around by hand with a per-match pre-clean; this is the code fix.
+
+    Reproduces the exact live sequence: seed → a real book's run references the
+    seeded profile → purge (retires it) → re-seed.
+    """
+    from app import database, models
+    from app.golden_workflows.fixtures import apply_seed
+    from app.golden_workflows.registry import get_workflow_bundle
+    from app.services.arena.runner import (
+        ARENA_PORTFOLIO_TAG,
+        ARENA_PROFILE_MARKER,
+        _purge_seeded_portfolios,
+    )
+
+    bundle = get_workflow_bundle("high-board-portfolio-review-day").fixtures
+
+    def _seed_like_run_match(s):
+        """apply_seed + the ownership markers run_match stamps on the seeded rows.
+
+        The markers are what scopes the purge, so a test that only calls
+        apply_seed silently exercises a no-op purge.
+        """
+        ids = apply_seed(bundle, s)
+        for p in s.query(models.Portfolio).filter(
+            models.Portfolio.id.in_(list(ids["portfolios"].values()))
+        ):
+            p.tags = sorted({*(p.tags or []), ARENA_PORTFOLIO_TAG})
+        for prof in s.query(models.PricingParameterProfile).filter(
+            models.PricingParameterProfile.id.in_(list(ids["pricing_profiles"].values()))
+        ):
+            prof.summary = {**(prof.summary or {}), ARENA_PROFILE_MARKER: True}
+        s.commit()
+        return ids
+
+    with offline_session_factory():
+        with database.SessionLocal() as s:
+            # A REAL desk book, untouched by the arena purge.
+            real = models.Portfolio(name="Default", kind="container", tags=[])
+            s.add(real)
+            s.flush()
+            ids = _seed_like_run_match(s)
+            profile_id = ids["pricing_profiles"]["prof"]
+            # The match's model prices the REAL book against the seeded profile.
+            s.add(
+                models.RiskRun(
+                    portfolio_id=real.id,
+                    status="completed",
+                    pricing_parameter_profile_id=profile_id,
+                )
+            )
+            s.commit()
+
+        with database.SessionLocal() as s:
+            _purge_seeded_portfolios(s, bundle)
+            s.commit()
+            retired = s.get(models.PricingParameterProfile, profile_id)
+            # Provenance preserved: retired, not deleted.
+            assert retired is not None
+            assert (retired.summary or {}).get("arena_retired") is True
+
+        # The next match re-seeds. This must NOT raise.
+        with database.SessionLocal() as s:
+            ids2 = _seed_like_run_match(s)
+            assert ids2["pricing_profiles"]["prof"] != profile_id
+
+        # And the re-seeded risk run must point at the NEW profile, not the
+        # retired one — a stale FK would hand the agent a dangling pointer.
+        with database.SessionLocal() as s:
+            run = s.get(models.RiskRun, ids2["risk_runs"]["gov"])
+            assert run.pricing_parameter_profile_id == ids2["pricing_profiles"]["prof"]
+            # The provenance ids embedded in the metrics blob must agree too.
+            meta = (run.metrics or {}).get("source_metadata") or {}
+            assert meta.get("pricing_parameter_profile_id") == (
+                ids2["pricing_profiles"]["prof"]
+            )
