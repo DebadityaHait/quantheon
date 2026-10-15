@@ -245,7 +245,7 @@ The common option builder already has a partial explicit-date path for:
 These paths must be standardized on `exercise_date` and settlement conventions,
 then numeric construction must be removed from new writes.
 
-### 8.2 QuantArk supports dates; Open OTC builders do not
+### 8.2 QuantArk supports dates; Quantheon builders do not
 
 The installed QuantArk constructors support `exercise_date` and
 `settlement_date` for:
@@ -256,18 +256,18 @@ The installed QuantArk constructors support `exercise_date` and
 - `PhoenixOption`
 - `KnockOutResetSnowballOption`
 
-Open OTC builders and product contracts must expose those lifecycle fields and
+Quantheon builders and product contracts must expose those lifecycle fields and
 generate schedules from absolute start/end dates.
 
 ### 8.3 Constructor gaps
 
 `AsianOption` and `RangeAccrualOption` accept `exercise_date` in the installed
 QuantArk version but do not accept `settlement_date`. The refactor must choose one
-of these implementation mechanisms without weakening the Open OTC contract:
+of these implementation mechanisms without weakening the Quantheon contract:
 
 1. upgrade/extend QuantArk so the constructors forward settlement lifecycle
    fields, or
-2. retain settlement as a clearly named Open OTC attribute applied after product
+2. retain settlement as a clearly named Quantheon attribute applied after product
    construction.
 
 The selected mechanism must be covered by constructor and pricing-adapter tests.

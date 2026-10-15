@@ -6,7 +6,7 @@
 
 ## 1. Goal & audience
 
-Introduce the Open OTC platform's features to **prospective clients / traders**, with the
+Introduce the Quantheon platform's features to **prospective clients / traders**, with the
 **AI agent as the hero**. Tone: confident, benefit-led, light on jargon. The piece must show
 the agent's real differentiator — *natural language → tool calls → human-in-the-loop (HITL)
 approval → results on the real pages* — as a single continuous desk workflow.
@@ -72,13 +72,13 @@ final scene fades out.
 
 | # | Time | Screen | Key on-screen action | VO |
 |---|------|--------|----------------------|-----|
-| 0 | 0–6 | Brand cover (reused) | "Open OTC" title settles | "This is Open OTC — an AI-powered derivatives desk." |
+| 0 | 0–6 | Brand cover (reused) | "Quantheon" title settles | "This is Quantheon — an AI-powered derivatives desk." |
 | 1 | 6–20 | AgentDesk + rendered chat | User bubble types the request; agent bubble plans (persona tag `TRADER`) | "Tell it what you want, in plain language. 'Quote a twelve-month CSI 500 snowball — knock-out one-oh-two, knock-in sixty, eight-percent coupon.'" |
 | 2 | 20–36 | Booking panel + HITL card | Price + Greeks reveal; **booking card → Approve** (press + green check) | "It builds the structured product, prices it with full Greeks, and waits for your approval before anything is booked." |
 | 3 | 36–52 | Risk page | Totals count up; by-underlying bars draw in | "Ask for your risk, and it reprices the book and aggregates delta, gamma and vega — in a single pass." |
 | 4 | 52–70 | Hedging + HITL card | Solver proposes legs; Approve; legs land on the blotter | "Say 'hedge the CSI 500 delta.' The solver sizes the legs, you approve, and they're booked to the hedging blotter." |
 | 5 | 70–84 | Breadth montage (3 panels) | scenario · backtest · report slide through | "Scenario stress tests, historical backtests, board-ready reports — the same assistant, in the same thread." |
-| 6 | 84–90 | Brand lockup (reused) | "Open OTC" + tagline | "Open OTC. One assistant. Your whole desk." |
+| 6 | 84–90 | Brand lockup (reused) | "Quantheon" + tagline | "Quantheon. One assistant. Your whole desk." |
 
 **VO total ≈ 130 words** (~90s with pauses + music-only cover/lockup moments). TTS phonetic
 hints: `102 → "one-oh-two"`, `CSI 500 → "C-S-I five hundred"`, `60 → "sixty"`.

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Produce a ~90s, 1920×1080 narrated walkthrough that introduces the Open OTC platform with the AI agent as the hero, following one end-to-end thread (quote → price → book → risk → hedge → breadth), bookended by the existing brand cover.
+**Goal:** Produce a ~90s, 1920×1080 narrated walkthrough that introduces the Quantheon platform with the AI agent as the hero, following one end-to-end thread (quote → price → book → risk → hedge → breadth), bookended by the existing brand cover.
 
 **Architecture:** A HyperFrames root composition (`marketing/feature-walkthrough/index.html`) sequences seven scene sub-compositions on two alternating visual tracks (for 0.5s crossfade overlaps), with seven per-line voiceover clips and one low BGM bed on audio tracks. Real pages are genuine screenshots captured from the live app; the agent chat and HITL confirmation cards are rendered as on-brand HTML for legibility and script control.
 
@@ -100,17 +100,17 @@ ls -la assets/ fonts/ > .capture-manifest.txt && echo "manifest written"
 
 Run one `npx hyperframes tts` per line (pick a male English voice; if the configured provider needs keys and fails, fall back to the local Kokoro provider). Exact copy:
 ```
-vo-0: "This is Open OTC — an AI-powered derivatives desk."
+vo-0: "This is Quantheon — an AI-powered derivatives desk."
 vo-1: "Tell it what you want, in plain language. Quote a twelve-month C-S-I five hundred snowball — knock-out one-oh-two, knock-in sixty, eight percent coupon."
 vo-2: "It builds the structured product, prices it with full Greeks, and waits for your approval before anything is booked."
 vo-3: "Ask for your risk, and it reprices the book and aggregates delta, gamma and vega — in a single pass."
 vo-4: "Hedge the C-S-I five hundred delta. The solver sizes the legs, you approve, and they're booked to the hedging blotter."
 vo-5: "Scenario stress tests, historical backtests, board-ready reports — the same assistant, in the same thread."
-vo-6: "Open OTC. One assistant. Your whole desk."
+vo-6: "Quantheon. One assistant. Your whole desk."
 ```
 Example invocation (adjust flags to the installed CLI's `tts --help`):
 ```bash
-npx --yes hyperframes tts --text "This is Open OTC — an AI-powered derivatives desk." \
+npx --yes hyperframes tts --text "This is Quantheon — an AI-powered derivatives desk." \
   --voice <male-en-voice> --output assets/vo-0.mp3
 ```
 

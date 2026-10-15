@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Refactor Open OTC so positions reference normalized QuantArk-aligned product rows while preserving legacy position APIs and current pricing/RFQ/import behavior.
+**Goal:** Refactor Quantheon so positions reference normalized QuantArk-aligned product rows while preserving legacy position APIs and current pricing/RFQ/import behavior.
 
 **Architecture:** Use the approved Product Root Table + Family Detail Tables design. Product terms live in `products` plus family detail tables; positions become holding/trade records with `product_id` and temporary compatibility fields. All booking paths converge through a deterministic booking service that creates products, positions, compatibility mirrors, and audit records.
 

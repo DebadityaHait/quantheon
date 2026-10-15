@@ -2567,7 +2567,7 @@ export function Sidebar({ items, active, onNavigate }: Props) {
       <div className="wl-sidebar__brand">
         <div className="wl-sidebar__brand-mark">OTC</div>
         <div className="wl-sidebar__brand-text">
-          <strong>Open OTC</strong>
+          <strong>Quantheon</strong>
           <span>AI trading platform</span>
         </div>
       </div>

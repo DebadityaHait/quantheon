@@ -1839,7 +1839,7 @@ class ReportJobCreate(BaseModel):
     portfolio_id: int | None = None
     rfq_id: int | None = None
     pricing_parameter_profile_id: int | None = None
-    title: str = "Open OTC Report"
+    title: str = "Quantheon Report"
 
 
 class ReportJobOut(BaseModel):

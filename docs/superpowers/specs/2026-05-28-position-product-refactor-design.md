@@ -68,7 +68,7 @@ QuantArk reference points:
 - `/Users/fuxinyao/quant-ark/asset/equity/product/deltaone/futures.py`
 - `/Users/fuxinyao/quant-ark/portfolio/equity/position.py`
 
-The Open OTC database model should mirror the same boundary:
+The Quantheon database model should mirror the same boundary:
 
 - Product row: class identity and constructor terms.
 - Product detail rows: QuantArk family-specific config, barrier, coupon, schedule, participation, and payoff terms.

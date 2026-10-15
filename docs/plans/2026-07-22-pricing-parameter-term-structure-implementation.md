@@ -524,7 +524,7 @@ In `backend/app/services/underlyings.py`, immediately after `open_position_under
 
 ```python
 def open_otc_positions(session: Session) -> list[Position]:
-    """Open OTC positions in the same scope as open_position_underlying_symbols,
+    """Quantheon positions in the same scope as open_position_underlying_symbols,
     but returning the Position rows (product eager-loaded for term extraction)."""
     from sqlalchemy.orm import selectinload
 

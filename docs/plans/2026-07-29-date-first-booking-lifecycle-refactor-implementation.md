@@ -81,7 +81,7 @@ checkout changes.
    exercise. Futures use `maturity_date`; Spot has no expiry.
 9. **No wall-clock reads in domain resolution.** Request boundaries supply the
    accounting/effective/as-of date.
-10. **Date-aware QuantArk remains authoritative for pricing T.** Open OTC may
+10. **Date-aware QuantArk remains authoritative for pricing T.** Quantheon may
     render a read-model maturity using the same QuantArk day-count/calendar
     utilities but never writes it to Product terms.
 11. **Asian/Range Accrual settlement is retained.** Until QuantArk constructors

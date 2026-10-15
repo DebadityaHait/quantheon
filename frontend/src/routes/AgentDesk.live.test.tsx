@@ -495,7 +495,7 @@ describe('AgentDeskLive SSE parsing', () => {
     const fetchMock = vi.mocked(globalThis.fetch);
     let asyncAgentRequests = 0;
     const clearIntervalSpy = vi.spyOn(window, 'clearInterval');
-    vi.spyOn(window, 'setInterval').mockImplementation(() => 123);
+    vi.spyOn(window, 'setInterval').mockImplementation(() => 123 as unknown as ReturnType<typeof window.setInterval>);
 
     fetchMock.mockImplementation(async (input, init) => {
       const url = requestUrl(input);
