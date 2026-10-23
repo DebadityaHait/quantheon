@@ -41,7 +41,7 @@ def test_facade_exports_full_lifecycle():
 def test_facade_identity_matches_source():
     """Re-exports must be the same callable as the source — no accidental shadowing."""
     from app.services import rfq as src_rfq
-    from app.services.quantark import solve_rfq as src_solve
+    from app.services.quantheon_engine import solve_rfq as src_solve
 
     assert rfq_svc.get_rfq_catalog is src_rfq.get_rfq_catalog
     assert rfq_svc.quote_rfq is src_rfq.quote_rfq
@@ -55,7 +55,7 @@ def test_snowball_template_carries_flat_contract_terms():
     snowball = next(t for t in COMMON_TEMPLATES if t["key"] == "snowball")
     assert snowball["product_type"] in _BUILD_PRODUCT_FAMILIES
     pk = snowball["product_kwargs"]
-    # FLAT contract inputs, not a nested QuantArk barrier_config
+    # FLAT contract inputs, not a nested Quantheon Engine barrier_config
     assert "barrier_config" not in pk
     for key in ("ko_barrier_pct", "ki_barrier_pct", "ko_rate",
                 "lockup_months", "trade_start_date", "observation_frequency"):
@@ -160,7 +160,7 @@ def test_quote_rfq_snowball_solve_produces_pending_approval(session):
     from app.models import RfqStatus
 
     # Future trade start: the snowball schedule must fall after the market
-    # valuation date (utcnow), else QuantArk rejects a past-dated schedule.
+    # valuation date (utcnow), else Quantheon Engine rejects a past-dated schedule.
     trade_start = (date.today() + timedelta(days=30)).isoformat()
     draft = RFQRequestDraft(
         underlying="000905.SH", quantity=1_000_000.0, quote_mode="solve",

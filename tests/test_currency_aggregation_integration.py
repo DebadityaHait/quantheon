@@ -5,7 +5,7 @@ import pytest
 def test_calculate_portfolio_risk_emits_by_currency(monkeypatch):
     """Two positions in different currencies must NOT cross-sum."""
     from types import SimpleNamespace
-    from app.services import quantark
+    from app.services import quantheon_engine
 
     def fake_job(job):
         # job grew to (index, snapshot, market, pricing_failure, pricing_diagnostics);
@@ -13,12 +13,12 @@ def test_calculate_portfolio_risk_emits_by_currency(monkeypatch):
         index, snapshot, market, *_ = job
         ccy = market.currency
         row = {"currency": ccy, "market_value": 100.0 if ccy == "CNY" else 10.0}
-        contribution = quantark._empty_risk_totals()
+        contribution = quantheon_engine._empty_risk_totals()
         contribution["market_value"] = 100.0 if ccy == "CNY" else 10.0
         contribution["delta"] = 1.0
         return (index, row, contribution, 0.0)
 
-    monkeypatch.setattr(quantark, "_calculate_position_risk_job", fake_job)
+    monkeypatch.setattr(quantheon_engine, "_calculate_position_risk_job", fake_job)
 
     from app.schemas import PricingEnvironmentSnapshot
 
@@ -29,7 +29,7 @@ def test_calculate_portfolio_risk_emits_by_currency(monkeypatch):
         1: PricingEnvironmentSnapshot(currency="CNY"),
         2: PricingEnvironmentSnapshot(currency="USD"),
     }
-    result = quantark.calculate_portfolio_risk(portfolio, position_markets=markets)
+    result = quantheon_engine.calculate_portfolio_risk(portfolio, position_markets=markets)
 
     assert set(result["by_currency"]) == {"CNY", "USD"}
     assert result["by_currency"]["CNY"]["market_value"] == 100.0

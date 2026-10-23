@@ -21,7 +21,7 @@ from app.services.domains.products import (
     ProductSpec,
     compatibility_terms,
     create_or_get_product,
-    product_family_for_quantark_class,
+    product_family_for_engine_class,
     query_autocallable_observations,
     product_spec_from_position_payload,
 )
@@ -259,9 +259,9 @@ def test_product_spec_from_position_payload_maps_known_family(session):
 
 
 def test_product_family_uses_package_only_for_explicit_components():
-    assert product_family_for_quantark_class("VerticalSpreadOption") == "option"
+    assert product_family_for_engine_class("VerticalSpreadOption") == "option"
     assert (
-        product_family_for_quantark_class(
+        product_family_for_engine_class(
             "VerticalSpreadOption", components=[{"component_product_id": 1}]
         )
         == "package"

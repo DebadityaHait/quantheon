@@ -13,9 +13,9 @@ from datetime import date
 from typing import Any, Callable
 
 from ...schemas import PricingEnvironmentSnapshot
-from ..quantark import validate_quantark_build
+from ..quantheon_engine import validate_engine_build
 from . import product_contracts, schedules
-from .products import ProductSpec, product_family_for_quantark_class
+from .products import ProductSpec, product_family_for_engine_class
 
 _ENGINE_BY_CLASS: dict[str, str] = {
     "EuropeanVanillaOption": "BlackScholesEngine",
@@ -55,7 +55,7 @@ class BuildResult:
 
     @property
     def product_kwargs(self) -> dict[str, Any]:
-        """Validated QuantArk kwargs. The single carrier is ``product_spec.terms``;
+        """Validated Quantheon Engine kwargs. The single carrier is ``product_spec.terms``;
         this view returns ``{}`` when the build did not succeed, so partial kwargs
         never leak from a failed build."""
         return dict(self.product_spec.terms) if self.product_spec is not None else {}
@@ -205,7 +205,7 @@ def _common_option(terms: dict, out: _Out, *, date_first: bool = True) -> dict:
 
 
 def _mixed_maturity_representation_error(terms: dict[str, Any]) -> str | None:
-    """QuantArk accepts either tenor-style maturity or explicit date maturity.
+    """Quantheon Engine accepts either tenor-style maturity or explicit date maturity.
 
     Passing both through the prebuilt path creates an ambiguous termsheet and can
     fail later with opaque type errors. Treat key presence as intentional here:
@@ -346,7 +346,7 @@ def _build_snowball(terms: dict, *, quantark_class: str) -> _Out:
         "is_annualized_ko": annualized,
     }
     # Annualized KO accruals need explicit accrual endpoints to size each
-    # coupon's year-fraction; the QuantArk validator rejects the build without
+    # coupon's year-fraction; the Quantheon Engine validator rejects the build without
     # them. Honor caller-supplied dates (settlement may lag exercise), else
     # derive: initial_date = trade start, settlement_date = exercise maturity.
     out.product_kwargs["initial_date"] = (
@@ -510,10 +510,10 @@ def _carry_otc_metadata(terms: dict, pk: dict, keys: tuple[str, ...]) -> None:
 
     These fields (spot: instrument_code/exchange/contract_multiplier; futures:
     contract_code) are read by the equity_spot/futures_products side-tables but
-    are NOT part of the QuantArk constructor surface (SpotInstrument takes only
+    are NOT part of the Quantheon Engine constructor surface (SpotInstrument takes only
     underlying/deltaone_type; Futures rejects contract_code). Prefixing with
     ``_otc_`` lets them survive in stored terms while ``_build_termsheet`` pops
-    them before QuantArk construction at validate/price time — the same pattern
+    them before Quantheon Engine construction at validate/price time — the same pattern
     the OTC import adapter uses for autocallable lifecycle attrs."""
     for key in keys:
         value = terms.get(key)
@@ -842,7 +842,7 @@ def build_product(
             product_kwargs = _tidy_built_snowball(terms)
         else:
             # prebuilt=True for a non-snowball family: the caller (e.g. the OTC import
-            # adapter) asserts `terms` is a complete QuantArk termsheet. Validate-and-
+            # adapter) asserts `terms` is a complete Quantheon Engine termsheet. Validate-and-
             # wrap verbatim — never re-synthesize (it would drop explicit dates and
             # per-date schedules the workbook supplied). `solve_target` does not apply.
             representation_error = _mixed_maturity_representation_error(terms)
@@ -893,7 +893,7 @@ def build_product(
         warnings = out.warnings
     market = market or _default_market(terms)
     # An explicit exercise_date at/before the valuation date is an expired option:
-    # QuantArk builds it but it cannot be priced, so reject it here rather than persist
+    # Quantheon Engine builds it but it cannot be priced, so reject it here rather than persist
     # a "validated" but unpriceable position.
     _exercise = product_kwargs.get("exercise_date")
     if _exercise is not None:
@@ -909,11 +909,11 @@ def build_product(
                     f"{_val_date} (expired option)")},
                 product_spec=None,
             )
-    res = validate_quantark_build(family, dict(product_kwargs), market, engine_name)
+    res = validate_engine_build(family, dict(product_kwargs), market, engine_name)
     spec = (
         ProductSpec(
             asset_class=asset_class,
-            product_family=product_family_for_quantark_class(family, components=components),
+            product_family=product_family_for_engine_class(family, components=components),
             quantark_class=family,
             underlying=str(underlying or terms.get("underlying") or "UNKNOWN"),
             # CNY is an intentional CN-desk fallback, mirroring _default_market;

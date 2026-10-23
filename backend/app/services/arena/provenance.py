@@ -40,6 +40,12 @@ def _git(*args: str) -> str | None:
 
 
 def _package(name: str) -> str | None:
+    if name == "quantark":
+        try:
+            import quantheon_engine
+            return quantheon_engine.__version__
+        except (ImportError, AttributeError):
+            return None
     try:
         return metadata.version(name)
     except metadata.PackageNotFoundError:

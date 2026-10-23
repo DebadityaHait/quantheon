@@ -1,9 +1,9 @@
 # Quantheon — agent guidance
 
 - **Backend** — FastAPI + Uvicorn, LangGraph agents, SQLAlchemy models, Alembic
-  migrations. Pricing/risk math is delegated to **QuantArk** (deterministic quant
-  engine) — numbers never come from an LLM. Tests: `.venv/bin/python -m pytest`.
-- **Frontend** — React 19 / Vite / TypeScript, Radix UI, "Warm Ledger" tokens.
+  migrations. Pricing/risk math is delegated to **Quantheon Engine** (deterministic
+  quant engine) — numbers never come from an LLM. Tests: `.venv/bin/python -m pytest`.
+- **Frontend** — React 19 / Vite / TypeScript, Radix UI, shared design tokens.
   Tests: `cd frontend && npm test` (vitest), type-check `npx tsc --noEmit`.
 - **DB** — SQLite at `data/open_otc.sqlite3`; **Alembic is the upgrade path**
   (`.venv/bin/python -m alembic upgrade head`). The live DB can lag `head`; a 500
@@ -89,9 +89,10 @@ These bite in more than one subsystem. Each links to where it is argued in full.
   namespace. That is why the audit, booking-capture and binary-read middlewares all live
   there, in every stack including the one the framework adds for you.
   ([deep_agent](backend/app/services/deep_agent/CLAUDE.md))
-- **QuantArk is pinned `==0.3.0` — never install it editable.** Its version is part of the
-  benchmark's evidence; a sibling working tree as the pricing engine silently moves every
-  harvested number.
+- **Quantheon Engine is bundled at `backend/quantheon_engine`, based on version 0.3.0.**
+  Its source is part of benchmark evidence. Preserve its Apache-2.0 LICENSE and NOTICE;
+  never substitute an external installation or change its math without revalidating fixtures.
+  Legacy database, API and environment field names remain for compatibility.
   ([golden_workflows](backend/app/golden_workflows/CLAUDE.md))
 - **Exact-set test assertions break when you add a tool, skill or route.** Adding one
   SKILL.md has broken pins in six test files. Enumerate before you start:

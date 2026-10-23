@@ -223,7 +223,7 @@ describe('ProductTermsForm nested config rendering', () => {
 });
 
 describe('intake product coverage', () => {
-  it('renders OneTouchOption with QuantArk touch fields (rebate, direction)', () => {
+  it('renders OneTouchOption with Quantheon Engine touch fields (rebate, direction)', () => {
     render(
       <ProductTermsForm
         productType="OneTouchOption"

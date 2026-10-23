@@ -327,24 +327,21 @@ never by subjective), and exposes `subjective_mean/stdev/mode`.
 
 ---
 
-## QuantArk is pinned — never install it editable
+## The pricing engine is vendored
 
-`pyproject.toml` pins **`quantark==0.3.0`** exactly, not `>=`. QuantArk is the engine the
-golden fixtures are harvested against, so its version is part of the benchmark's evidence
-(the same rule `CLAUDE.md` already states for the compaction A/B: *dependency drift
-invalidates the benchmark*). **Never `pip install -e /path/to/quant-ark`** — that makes a
-live working tree the pricing engine, so an uncommitted edit in a sibling repo silently
-changes benchmark numbers here, and it leaves stale dist metadata (this venv once reported
-`0.1.2` while running `0.4.0` code, defeating any version check).
+Quantheon Engine lives in `backend/quantheon_engine`, based on version 0.3.0, with its
+Apache-2.0 license and notice. Imports were renamed; the pricing math is unchanged. The
+golden fixtures were harvested against this version; changing its source can change
+benchmark evidence. Do not substitute an external installation.
 
-This is not hypothetical: QuantArk `fdf3a70` *"stabilize PDE and QUAD grids"* rewrote
+This is not hypothetical: Quantheon Engine `fdf3a70` *"stabilize PDE and QUAD grids"* rewrote
 `snowball_quad_engine.py` and moved every `SnowballQuadEngine` number — high-board's governed
 valuation `238.0478921928385 → 237.72581292974365`, `gamma_cash −6.64 → −287.04` — with **no
 change in this repo**. Diagnosis shortcut: if only `SnowballOption` rows drift while vanillas
 (`BlackScholesEngine`) and barriers (`BarrierAnalyticalEngine`) stay exact, suspect the QUAD
 engine version before anything in this repo.
 
-To move to a newer QuantArk: bump the pin, re-run
+To change the vendored engine: update the source and provenance, re-run
 `python -m app.golden_workflows.harvest_fixtures`, and update the graded constants in the
 affected manifests **in the same commit** — never separately, or fixtures and engine disagree
 and every grounding check silently mis-scores. Note 0.3.0 forgoes 0.4.0's QUAD/PDE
@@ -601,9 +598,9 @@ needs_amount fill → release → drift-vs-override adjudication → settle + no
 → fail-closed reopen refusal. The session-wide `void` ban is the waive analog
 (a per-step ban is gameable by voiding early; `success.assertions` only).
 
-- **Zero QuantArk — the first board that does not.** Truth is harvested by
+- **Zero Quantheon Engine — the first board that does not.** Truth is harvested by
   driving the real settlement services (`DETERMINISM_REGISTRY` entry), so a
-  QuantArk bump never requires re-harvesting this board. The numbers live in
+  Quantheon Engine bump never requires re-harvesting this board. The numbers live in
   the settlement store, not the pricing engine.
 - **Seeded lifecycle events bypass `create_lifecycle_event`'s allowlist.**
   Fixture rows are inserted directly, so a family that cannot actually record
@@ -668,7 +665,7 @@ can score against harvested truth. Package: `golden_workflows/determinism.py`
 - **Truth is harvested, never invented.** `harvest_fixtures.py` digs five targets from
   real payloads into `*.truth.json`, keyed **by underlying/shift** (`[underlying=AAPL]`,
   not `[position_id=8]` — ids aren't stable in a clean DB). Re-run
-  `python -m app.golden_workflows.harvest_fixtures` after any QuantArk numeric change
+  `python -m app.golden_workflows.harvest_fixtures` after any Quantheon Engine numeric change
   rather than hand-editing.
 - **Isolation posture:** the determinism gate and harvester run in **isolated** clean
   DBs, and the **live arena path is unchanged** — no market data is seeded into the

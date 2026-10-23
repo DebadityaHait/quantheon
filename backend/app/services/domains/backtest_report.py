@@ -2,7 +2,7 @@
 
 Reads the shaped JSON results produced by `backtest.run_pipeline` and writes a
 self-contained HTML file that shares the application's report visual style
-(`report_style.py`) with the scenario-test report. Replaces the QuantArk
+(`report_style.py`) with the scenario-test report. Replaces the Quantheon Engine
 dashboard as the backtest report artifact.
 """
 from __future__ import annotations

@@ -23,7 +23,7 @@ from ...models import (
 from ..domains.booking import (
     BookingRequest, ProductBookingSpec, book_position, prepare_booking_product_spec,
 )
-from ..domains.products import product_family_for_quantark_class
+from ..domains.products import product_family_for_engine_class
 from ..engine_configs import DEFAULT_ENGINE_BY_PRODUCT_TYPE
 from ..instruments import resolve_bookable_underlying
 from ..task_runner import submit_async_task
@@ -112,7 +112,7 @@ def _draft_to_row(document_id: int, seq: int, draft: TradeDraft) -> ExtractedTra
 
 def synthesize_booking_terms(family: str, terms: dict, *, underlying: str | None = None,
                              currency: str | None = None) -> tuple[dict | None, list[str]]:
-    """Turn schema-vocabulary extraction output into a canonical QuantArk termsheet.
+    """Turn schema-vocabulary extraction output into a canonical Quantheon Engine termsheet.
 
     Extraction fills ``get_product_term_schema(family)`` — the same surface the agent's
     own ``build_product`` tool consumes — so its output is RAW builder input, not a
@@ -124,7 +124,7 @@ def synthesize_booking_terms(family: str, terms: dict, *, underlying: str | None
     option_type}`` (three of those are REQUIRED by the published schema), and the
     booking gate's synthesize-vs-verbatim sniffer (``booking._has_raw_termsheet_vocab``)
     then keyed on maturity vocabulary alone, so those terms took the validate-and-wrap
-    path and QuantArk rejected ``initial_price`` for ``EuropeanVanillaOption``. The
+    path and Quantheon Engine rejected ``initial_price`` for ``EuropeanVanillaOption``. The
     sniffer now also counts ``initial_price`` for families whose constructor rejects
     it, but building HERE stays the contract: ``validate_trade_terms`` and
     ``book_trade`` share this helper, so "valid" and "bookable" cannot diverge.
@@ -178,7 +178,7 @@ def validate_trade_terms(session: Session, trade: ExtractedTrade) -> tuple[str, 
     engine_name = DEFAULT_ENGINE_BY_PRODUCT_TYPE.get(trade.family)
     spec = ProductBookingSpec(
         asset_class="equity",
-        product_family=product_family_for_quantark_class(trade.family),
+        product_family=product_family_for_engine_class(trade.family),
         quantark_class=trade.family,
         underlying=trade.underlying or "UNKNOWN",
         currency=trade.currency,
@@ -468,7 +468,7 @@ def book_trade(
                     portfolio_name=portfolio_name)}
     spec = ProductBookingSpec(
         asset_class="equity",
-        product_family=product_family_for_quantark_class(trade.family),
+        product_family=product_family_for_engine_class(trade.family),
         quantark_class=trade.family,
         underlying=trade.underlying or "UNKNOWN",
         currency=trade.currency,

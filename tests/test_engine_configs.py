@@ -3,7 +3,7 @@
 Covers the contract from the engine-config feature request:
 - tasks read the engine from the position first, else map via the config
 - family rules (autocallables/others) use the QUAD/MC/PDE/ANALYTICAL enums
-- product-type rules name real QuantArk engines and beat family rules
+- product-type rules name real Quantheon Engine engines and beat family rules
 - backtest has no standalone config: the resolved pricing engine is projected
   onto the backtest engine vocabulary
 """
@@ -20,12 +20,12 @@ from app.services.engine_configs import (
     resolve_pricing_engine,
     validate_rules,
 )
-from app.services.quantark import ensure_quantark_path
+from app.services.quantheon_engine import ensure_engine_path
 
 
 @pytest.fixture(autouse=True)
-def _quantark_on_path():
-    ensure_quantark_path()
+def _engine_on_path():
+    ensure_engine_path()
 
 
 def _pos(product_type: str, engine_name: str | None = None, engine_kwargs: dict | None = None):
@@ -141,7 +141,7 @@ def test_mc_family_rule_maps_to_registered_mc_engines(product_type, expected):
 
 
 @pytest.mark.parametrize("product_type", [
-    "KnockOutResetSnowballOption",  # no KO-reset MC engine in QuantArk
+    "KnockOutResetSnowballOption",  # no KO-reset MC engine in Quantheon Engine
     "OneTouchOption",
     "DoubleOneTouchOption",
 ])

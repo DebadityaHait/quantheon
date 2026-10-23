@@ -1002,11 +1002,11 @@ def test_book_position_tool_omits_engine_for_config_resolution():
 
 
 def test_build_termsheet_for_position_falls_back_to_product_default_engine(monkeypatch):
-    """quantark._build_termsheet_for_position must not force BlackScholesEngine
+    """quantheon_engine._build_termsheet_for_position must not force BlackScholesEngine
     when the position pins no engine (the calculate_risk path of the same Run
     #30 bug) — fall back to the product type's default engine instead.
     """
-    from app.services import quantark as quantark_svc
+    from app.services import quantheon_engine as engine_svc
 
     captured: dict = {}
 
@@ -1014,9 +1014,9 @@ def test_build_termsheet_for_position_falls_back_to_product_default_engine(monke
         captured.update(kwargs)
         return SimpleNamespace(), {}
 
-    monkeypatch.setattr(quantark_svc, "_build_termsheet", fake_build_termsheet)
+    monkeypatch.setattr(engine_svc, "_build_termsheet", fake_build_termsheet)
     monkeypatch.setattr(
-        quantark_svc,
+        engine_svc,
         "compatibility_terms_for_position",
         lambda position: {
             "product_type": "BarrierOption",
@@ -1025,12 +1025,12 @@ def test_build_termsheet_for_position_falls_back_to_product_default_engine(monke
     )
 
     position = SimpleNamespace(engine_name=None, engine_kwargs=None)
-    quantark_svc._build_termsheet_for_position(position)
+    engine_svc._build_termsheet_for_position(position)
     assert captured["engine_name"] == "BarrierAnalyticalEngine"
 
     # An explicit engine pin still wins over the product-type default.
     captured.clear()
     position = SimpleNamespace(engine_name="BarrierQuadEngine", engine_kwargs={"n": 32})
-    quantark_svc._build_termsheet_for_position(position)
+    engine_svc._build_termsheet_for_position(position)
     assert captured["engine_name"] == "BarrierQuadEngine"
     assert captured["engine_kwargs"] == {"n": 32}

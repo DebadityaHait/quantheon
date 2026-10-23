@@ -73,7 +73,7 @@ def _governed_valuation_key() -> float:
 def test_seeded_valuation_run_matches_a_fresh_producer_run(offline_session_factory, block_network):
     """A completed batch-pricing run writes a risk run AND a valuation run. The seed
     carries both (v4), and the seeded valuation must equal what the producer computes
-    on the same seed — else a QuantArk bump leaves a stale "governed" number."""
+    on the same seed — else a Quantheon Engine bump leaves a stale "governed" number."""
     from app import models
     from app.golden_workflows.determinism import HIGH_BOARD_ID, _drive_risk, seed_workflow
 

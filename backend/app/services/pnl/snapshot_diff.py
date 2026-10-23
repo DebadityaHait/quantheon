@@ -16,7 +16,7 @@ from app import database
 from app.models import RiskRun
 
 # Totals we diff. Restricted to an explicit list so a new metric appearing in
-# QuantArk output does not silently widen every report.
+# Quantheon Engine output does not silently widen every report.
 _TOTALS_KEYS: tuple[str, ...] = (
     "market_value",
     "pnl",

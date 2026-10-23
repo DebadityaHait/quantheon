@@ -60,7 +60,7 @@ def test_estimate_price_seconds_with_explicit_position_ids():
 def test_price_product_calls_quantark(monkeypatch):
     fake_result = MagicMock(ok=True, data={"price": 1.23}, error=None)
     monkeypatch.setattr(
-        "app.services.domains.pricing._quantark_price_product",
+        "app.services.domains.pricing._engine_price_product",
         lambda **kwargs: fake_result,
     )
     market = PricingEnvironmentSnapshot()
@@ -82,7 +82,7 @@ def test_price_product_preview_delegates_to_quantark(monkeypatch):
         return fake_result
 
     monkeypatch.setattr(
-        "app.services.domains.pricing._quantark_price_product_with_greeks",
+        "app.services.domains.pricing._engine_price_product_with_greeks",
         fake_pwg,
     )
     market = PricingEnvironmentSnapshot()

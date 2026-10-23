@@ -1,4 +1,4 @@
-"""Scenario authoring: thin wrappers over QuantArk's stresstest scenario layer."""
+"""Scenario authoring: thin wrappers over Quantheon Engine's stresstest scenario layer."""
 from __future__ import annotations
 
 import itertools
@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
-from app.services import quantark
+from app.services import quantheon_engine
 from app.services.source_evidence import canonical_hash
 
 _SOURCE_SNAPSHOT_KEY = "_source_snapshot_v1"
@@ -24,7 +24,7 @@ _PARAM_TO_METHOD = {
 }
 
 # Inverse of the param→builder-method routing, for reading scenarios back out.
-_PARAM_FROM_QUANTARK = {
+_PARAM_FROM_ENGINE = {
     "spot": "spot",
     "volatility": "vol",
     "rate": "rate",
@@ -144,10 +144,10 @@ def generate_grid(spec: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _imports():
-    quantark.ensure_quantark_path()
-    from quantark.stresstest.scenario.scenario_builder import ScenarioBuilder
-    from quantark.stresstest.scenario.scenario_library import ScenarioLibrary
-    from quantark.stresstest.stress.stress_types import StressType
+    quantheon_engine.ensure_engine_path()
+    from quantheon_engine.stresstest.scenario.scenario_builder import ScenarioBuilder
+    from quantheon_engine.stresstest.scenario.scenario_library import ScenarioLibrary
+    from quantheon_engine.stresstest.stress.stress_types import StressType
     return ScenarioBuilder, ScenarioLibrary, StressType
 
 
@@ -210,7 +210,7 @@ def build_custom(spec: dict[str, Any]) -> Any:
                 )
             kwargs["underlying"] = str(target)
         elif level == "position":
-            # The bridge builds EquityPosition objects keyed by QuantArk-generated
+            # The bridge builds EquityPosition objects keyed by Quantheon Engine-generated
             # UUID position_ids, NOT the app's DB position ids, so a DB id forwarded
             # here would fail at execution ("Stress target position ... not found").
             # Reject loudly in v1; portfolio/underlying levels are supported.
@@ -227,9 +227,9 @@ def build_custom(spec: dict[str, Any]) -> Any:
 
 
 def serialize_scenario(scenario: Any) -> dict[str, Any]:
-    """Project a QuantArk Scenario to the spec shape used by the UI + build_custom.
+    """Project a Quantheon Engine Scenario to the spec shape used by the UI + build_custom.
 
-    QuantArk param names (volatility, dividend_yield) are mapped back to the spec
+    Quantheon Engine param names (volatility, dividend_yield) are mapped back to the spec
     vocabulary (vol, dividend); stress_type/level are emitted as their enum
     `.name`/`.value` so they round-trip through build_custom (which upper/lowers).
     """
@@ -238,7 +238,7 @@ def serialize_scenario(scenario: Any) -> dict[str, Any]:
         stress_type = getattr(s.stress_type, "name", str(s.stress_type))
         level = getattr(s.level, "value", str(s.level))
         stresses.append({
-            "param": _PARAM_FROM_QUANTARK.get(s.parameter, s.parameter),
+            "param": _PARAM_FROM_ENGINE.get(s.parameter, s.parameter),
             "stress_type": stress_type,
             "value": float(s.stress_value),
             "level": level,
@@ -330,8 +330,8 @@ def _sidecar_path(name: str) -> Path:
 
 
 def save_set(name: str, scenarios: list[Any], grid_spec: dict[str, Any] | None = None) -> str:
-    quantark.ensure_quantark_path()
-    from quantark.stresstest.scenario.scenario_storage import ScenarioStorage
+    quantheon_engine.ensure_engine_path()
+    from quantheon_engine.stresstest.scenario.scenario_storage import ScenarioStorage
     target = _sets_dir() / f"{_safe_name(name)}.yaml"
     ScenarioStorage.save_scenarios(scenarios, str(target))
     sidecar = _sidecar_path(name)
@@ -363,8 +363,8 @@ def read_set_meta(name: str) -> dict[str, Any] | None:
 
 
 def load_set(name: str) -> list[Any]:
-    quantark.ensure_quantark_path()
-    from quantark.stresstest.scenario.scenario_storage import ScenarioStorage
+    quantheon_engine.ensure_engine_path()
+    from quantheon_engine.stresstest.scenario.scenario_storage import ScenarioStorage
     target = _sets_dir() / f"{_safe_name(name)}.yaml"
     if not target.exists():
         raise ValueError(f"Scenario set not found: {name}")

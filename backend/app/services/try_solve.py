@@ -20,7 +20,7 @@ from ..schemas import (
     TrySolveRowOut,
 )
 from .position_adapter import normalize_symbol
-from .quantark import solve_rfq, validate_quantark_build
+from .quantheon_engine import solve_rfq, validate_engine_build
 from .try_solve_registry import (
     TrySolveField,
     TrySolveProduct,
@@ -39,7 +39,7 @@ EXPORT_COLUMNS = (
     "Solved Value",
     "Target Label",
     "Target Value",
-    "QuantArk Product",
+    "Quantheon Engine Product",
     "Engine",
 )
 INVALID_SHEET_TITLE_CHARS = frozenset("[]:*?/\\")
@@ -230,7 +230,7 @@ def validate_try_solve_row(
     )
     if missing:
         return _row_out(resolved_row, "missing_terms", diagnostics + missing, product)
-    result = validate_quantark_build(
+    result = validate_engine_build(
         product.quantark_product_type, kwargs, market,
         product.default_engine_name, {},
     )
@@ -238,7 +238,7 @@ def validate_try_solve_row(
         return _row_out(
             resolved_row,
             "quantark_build_failed",
-            diagnostics + [result.error or "QuantArk product build failed"],
+            diagnostics + [result.error or "Quantheon Engine product build failed"],
             product,
         )
 
@@ -278,7 +278,7 @@ def solve_try_solve_row(
         return _row_out(
             resolved_row,
             "solve_failed",
-            [result.error or "QuantArk solve failed"],
+            [result.error or "Quantheon Engine solve failed"],
             product,
         )
 
@@ -717,7 +717,7 @@ def _flat_contract_for_row(
     quote_field: TrySolveQuoteField,
 ) -> dict[str, Any]:
     """Map a row to the FLAT term contract that build_product consumes (build
-    INPUTS, not QuantArk kwargs). The build-through adapter fills the solve
+    INPUTS, not Quantheon Engine kwargs). The build-through adapter fills the solve
     target's flat key with its initial guess before build_product (decision 6)."""
     del quote_field
     reference = _reference_price(row, market)
@@ -762,7 +762,7 @@ def _flat_contract_for_row(
         return {**base, "underlying": str(row.fields.get("underlying") or row.product_key),
                 "basis": _term_rate(row, "basis", 0.0)}
     if row.product_key in {"double_no_touch", "double_one_touch"}:
-        # Both keys share the QuantArk class DoubleOneTouchOption; touch direction
+        # Both keys share the Quantheon Engine class DoubleOneTouchOption; touch direction
         # rides in touch_type, derived from product_key. cash_payoff -> rebate is
         # handled by the builder (consistent with one_touch/digital).
         return {**base,
@@ -805,7 +805,7 @@ def _build_row_termsheet(
     maturity: float,
     quote_field: TrySolveQuoteField,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Complete QuantArk termsheet for a row via build_product (the single
+    """Complete Quantheon Engine termsheet for a row via build_product (the single
     producer). Every supported product key is migrated, so there is no legacy
     fallback; an unknown family raises _UnmigratedProductKey from
     _flat_contract_for_row. `solve_target` exempts the solved field from
@@ -1085,7 +1085,7 @@ def _export_values(row: TrySolveRowOut) -> dict[str, Any]:
         "Solved Value": row.solved_value,
         "Target Label": row.quote_request.target_label,
         "Target Value": row.quote_request.target_value,
-        "QuantArk Product": row.quantark_product_type,
+        "Quantheon Engine Product": row.quantark_product_type,
         "Engine": row.engine_name,
     }
 

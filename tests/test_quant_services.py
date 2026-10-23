@@ -4,7 +4,7 @@ from app.schemas import RFQRequestDraft
 from app.tools import QUANT_AGENT_TOOLS
 from app.tools.risk import calculate_risk_tool
 from app.tools.rfq import solve_rfq_tool
-from app.services.quantark import solve_rfq
+from app.services.quantheon_engine import solve_rfq
 
 
 def test_solve_rfq_returns_quote_payload():

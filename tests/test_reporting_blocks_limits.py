@@ -181,7 +181,7 @@ def test_the_fixture_matches_the_payload_the_runner_really_persists():
 
 
 class _FakeScenarioResult:
-    """Duck-typed stand-in for one QuantArk ScenarioResult."""
+    """Duck-typed stand-in for one Quantheon Engine ScenarioResult."""
     def __init__(self):
         self.scenario = type("_S", (), {"name": "Market Crash"})()
         self.portfolio_value = 404665.0977220147

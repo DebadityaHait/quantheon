@@ -14,7 +14,7 @@ objective: >
   A trader takes a client RFQ for a 1-year down-and-in barrier put from intake
   through to a booked, verified position, reports its impact on the desk book,
   exports the trade ticket, and refuses an unsupported product family: capture the
-  request, price it, route the quote for approval, build the QuantArk product, book
+  request, price it, route the quote for approval, build the Quantheon Engine product, book
   it into the control portfolio, verify the booked terms, price the book, report the
   net delta impact, export a trade ticket, and refuse an unsupported family.
 fixtures: trader-rfq-booking-day.fixtures.json
@@ -400,7 +400,7 @@ steps:
     # a registered class — diligent agents looked up the catalog, found it, and built
     # successfully, so the "unsupported" checks could never fire. 'cliquet-ratchet'
     # maps to nothing in the registry: an honest build attempt gets ok=false /
-    # "Unknown QuantArk class", and only a fabricating agent can "succeed".
+    # "Unknown Quantheon Engine class", and only a fabricating agent can "succeed".
     expected_tools: []
     outcome: >
       No such product family is supported. The agent validates and declines — either
@@ -417,7 +417,7 @@ steps:
         name: book_position
       # Real tool contracts (verified): build_product(unknown family) returns top-level
       # ok=false (validation is null); check_term_completeness(unknown class) returns a
-      # non-null "Unknown QuantArk class" error (no `complete` field). Either is valid
+      # non-null "Unknown Quantheon Engine class" error (no `complete` field). Either is valid
       # positive validation evidence (Codex code-review).
       - type: assertion_any_of
         axis: adherence

@@ -33,7 +33,7 @@ def price_product_tool(
     market: PricingEnvironmentSnapshot = PricingEnvironmentSnapshot(),
     engine_name: str = "BlackScholesEngine",
 ) -> dict[str, Any]:
-    """Price one ad-hoc OTC product through QuantArk and return price plus
+    """Price one ad-hoc OTC product through Quantheon Engine and return price plus
     metadata. Read-only: does NOT persist a valuation or touch any portfolio
     row. Use for exploratory pricing, RFQ quote previews, or single-spec
     what-if questions. For repricing stored positions, use run_batch_pricing

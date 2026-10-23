@@ -380,7 +380,7 @@ describe('BookingLive', () => {
     await waitFor(() => expect(screen.getByText('BOOKING')).toBeInTheDocument());
     // contract_multiplier is the third leg of the Notional = Quantity × ContractMultiplier ×
     // InitialPrice triangle; it must be present and editable for every option family, not just
-    // the autocallables. Each of these QuantArk constructors accepts contract_multiplier.
+    // the autocallables. Each of these Quantheon Engine constructors accepts contract_multiplier.
     for (const productType of [
       'EuropeanVanillaOption', 'AmericanOption', 'CashOrNothingDigitalOption',
       'BarrierOption', 'SingleSharkfinOption', 'DoubleSharkfinOption', 'AsianOption',
@@ -552,7 +552,7 @@ describe('BookingLive', () => {
     render(<BookingLive />);
 
     // Switch to a non-autocallable product; spot defaults inject initial_price into the
-    // form terms, but EuropeanVanillaOption's QuantArk constructor rejects that kwarg.
+    // form terms, but EuropeanVanillaOption's Quantheon Engine constructor rejects that kwarg.
     await userEvent.selectOptions(await screen.findByLabelText('Product Type'), 'EuropeanVanillaOption');
     await userEvent.click(await screen.findByRole('tab', { name: /pricing/i }));
     await userEvent.click(await screen.findByRole('button', { name: /^price$/i }));
@@ -573,7 +573,7 @@ describe('BookingLive', () => {
         return response([{ underlying: '000300.SH', rate: 0.025, dividend_yield: 0.01, volatility: 0.2 }]);
       }
       if (url === '/api/pricing/preview' && init?.method === 'POST') {
-        // QuantArk prices one long unit of the position; direction/size is the OTC layer's job.
+        // Quantheon Engine prices one long unit of the position; direction/size is the OTC layer's job.
         return response({ ok: true, price: 5.5, engine: 'BlackScholesEngine',
           product_type: 'EuropeanVanillaOption',
           greeks: { delta: 0.5, gamma: 0.1, vega: 0.2, theta: -0.3, rho: 0.4, rho_q: -0.05 },

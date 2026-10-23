@@ -20,7 +20,7 @@ from ..models import (
 )
 from .portfolio_membership import resolve_positions
 from .pricing_profiles import resolve_underlying_market_params
-from .quantark import closed_position_exclusion
+from .quantheon_engine import closed_position_exclusion
 
 
 def _utc_timestamp(value: datetime) -> str:

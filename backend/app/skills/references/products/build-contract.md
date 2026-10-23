@@ -90,7 +90,7 @@ to 0 because coupons accrue via the coupon leg, not the KO leg).
 ## Already-built termsheets (OTC import)
 
 Channels that ingest *existing* trades — notably the OTC position import — supply a
-complete QuantArk termsheet with explicit observation dates and per-date
+complete Quantheon Engine termsheet with explicit observation dates and per-date
 barrier/rate schedules (e.g. a step-down snowball). These are validated and wrapped
 verbatim via `build_product(..., prebuilt=True)` — never re-synthesized — because a
 uniform periodic schedule cannot express a step-down. The single

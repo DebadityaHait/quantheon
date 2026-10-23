@@ -185,7 +185,7 @@ resume, and built by `arena_model_to_selection`.
     **OpenCode** uses and remains the fallback + the only source of the `toggle`
     flag; its `interleaved: {field: "reasoning_content"}` is literally the DeepSeek
     quirk `DeepSeekReasoningChat` hand-implements.
-  - **Vendored, never fetched at runtime.** Same rule as the exact `quantark` pin
+  - **Vendored, never fetched at runtime.** Same rule as the bundled pricing engine
     and the harvested arena fixtures: third-party truth that governs behaviour
     arrives as a reviewable diff (with the upstream sha256 recorded), not as a
     silent change. A missing or corrupt snapshot degrades to permissive, never to a

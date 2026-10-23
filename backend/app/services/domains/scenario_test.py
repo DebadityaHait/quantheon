@@ -7,13 +7,13 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.services import quantark, scenario_test_bridge
+from app.services import quantheon_engine, scenario_test_bridge
 from app.services.domains import scenario_catalog, scenario_test_report
 
 
 def _result_aggregator():
-    quantark.ensure_quantark_path()
-    from quantark.stresstest.results.result_aggregator import ResultAggregator
+    quantheon_engine.ensure_engine_path()
+    from quantheon_engine.stresstest.results.result_aggregator import ResultAggregator
     return ResultAggregator
 
 
@@ -42,7 +42,7 @@ def _jsonable(value: Any) -> Any:
 
 
 def shape_results(results: Any) -> dict[str, Any]:
-    """Project a QuantArk StressTestResults into a JSON-serializable dict."""
+    """Project a Quantheon Engine StressTestResults into a JSON-serializable dict."""
     aggregator = _result_aggregator()
     worst = results.get_worst_scenario()
     best = results.get_best_scenario()
@@ -97,7 +97,7 @@ def run_pipeline(
 ) -> tuple[str, dict[str, Any], list[dict], Any | None]:
     """Returns (status, results_dict, excluded, raw). status in {completed, empty}.
 
-    `raw` is the QuantArk StressTestResults object on the completed path (used by
+    `raw` is the Quantheon Engine StressTestResults object on the completed path (used by
     write_artifacts for exports/report), or None on the empty path.
     """
     from app.services.risk_engine import _pricing_position_context  # reuse risk resolver
@@ -151,8 +151,8 @@ def run_pipeline(
         else scenario_catalog.resolve_scenarios(scenario_request)
     )
 
-    quantark.ensure_quantark_path()
-    from quantark.stresstest import StressTestEngine, StressTestConfig
+    quantheon_engine.ensure_engine_path()
+    from quantheon_engine.stresstest import StressTestEngine, StressTestConfig
     engine_config = StressTestConfig(
         calculate_greeks=bool(config.get("calculate_greeks", True)),
         greeks_method=str(config.get("greeks_method", "numerical")),
@@ -168,8 +168,8 @@ def run_pipeline(
 
 
 def _result_exporter():
-    quantark.ensure_quantark_path()
-    from quantark.stresstest.results.result_exporter import ResultExporter
+    quantheon_engine.ensure_engine_path()
+    from quantheon_engine.stresstest.results.result_exporter import ResultExporter
     return ResultExporter
 
 

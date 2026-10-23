@@ -28,7 +28,7 @@ from ..models import (
     TaskStatus,
 )
 from ..schemas import PricingEnvironmentSnapshot
-from .quantark import RISK_GREEK_KEYS, calculate_portfolio_risk
+from .quantheon_engine import RISK_GREEK_KEYS, calculate_portfolio_risk
 from .risk_engine import (
     _pricing_position_context,
     _resolve_risk_positions,

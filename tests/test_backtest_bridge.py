@@ -39,7 +39,7 @@ def test_build_books_excludes_missing_history():
     """Positions whose underlying has no entry in history are excluded (network-free)."""
     positions = [_Pos(10, "CSI500"), _Pos(11, "CSI300")]
     history = {}  # no history for any underlying
-    # build_books will call ensure_quantark_path but won't reach QuantArk imports
+    # build_books will call ensure_quantark_path but won't reach Quantheon Engine imports
     # because the missing-history exclusion happens before the product-build loop.
     configs, excluded = backtest_bridge.build_books(
         None, positions, history, engine_type=None)
@@ -57,9 +57,9 @@ def test_build_books_excludes_zero_quantity(monkeypatch):
     dummy_hedge = object()
     history = {"CSI500": (dummy_df, dummy_df, dummy_df, dummy_df, dummy_hedge)}
 
-    # Stub out quantark calls so no QuantArk import is needed.
-    import app.services.quantark as qk
-    monkeypatch.setattr(qk, "ensure_quantark_path", lambda: None)
+    # Stub out quantark calls so no Quantheon Engine import is needed.
+    import app.services.quantheon_engine as qk
+    monkeypatch.setattr(qk, "ensure_engine_path", lambda: None)
     monkeypatch.setattr(qk, "risk_pricing_exclusion", lambda pos: None)
 
     positions = [_Pos(20, "CSI500", quantity=0.0)]
@@ -83,8 +83,8 @@ def test_build_books_splits_products_by_engine_family(monkeypatch):
 
     positions = [_Pos(30, "CSI500"), _Pos(31, "CSI500")]
 
-    import app.services.quantark as qk
-    monkeypatch.setattr(qk, "ensure_quantark_path", lambda: None)
+    import app.services.quantheon_engine as qk
+    monkeypatch.setattr(qk, "ensure_engine_path", lambda: None)
     monkeypatch.setattr(qk, "risk_pricing_exclusion", lambda pos: None)
     monkeypatch.setattr(
         qk,
@@ -92,7 +92,7 @@ def test_build_books_splits_products_by_engine_family(monkeypatch):
         lambda pos: SnowballOption() if pos.id == 30 else EuropeanVanillaOption(),
     )
 
-    import quantark.backtest.otc as otc
+    import quantheon_engine.backtest.otc as otc
 
     class _FakeBookProduct:
         def __init__(self, **kw):
@@ -143,12 +143,12 @@ def test_build_books_uses_fallback_for_other_products_without_analytical(monkeyp
 
     positions = [_Pos(40, "CSI500")]
 
-    import app.services.quantark as qk
-    monkeypatch.setattr(qk, "ensure_quantark_path", lambda: None)
+    import app.services.quantheon_engine as qk
+    monkeypatch.setattr(qk, "ensure_engine_path", lambda: None)
     monkeypatch.setattr(qk, "risk_pricing_exclusion", lambda pos: None)
     monkeypatch.setattr(qk, "build_product_for_position", lambda pos: RangeAccrualOption())
 
-    import quantark.backtest.otc as otc
+    import quantheon_engine.backtest.otc as otc
 
     class _FakeBookProduct:
         def __init__(self, **kw):
@@ -190,7 +190,7 @@ def test_coerce_engine_type_maps_resolved_vocab_directly():
     EngineType — never leak the spec slot dict back to the caller."""
     import pytest
 
-    from quantark.util.enum.engine_enums import EngineType
+    from quantheon_engine.util.enum.engine_enums import EngineType
 
     engine_types = {
         "autocallable": EngineType.QUADRATURE,

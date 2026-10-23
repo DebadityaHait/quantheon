@@ -1,0 +1,1726 @@
+# Modified by Quantheon contributors: renamed package imports.
+"""
+Base PDE solver providing common infrastructure for finite difference pricing.
+
+Implements the Crank-Nicolson scheme for solving the Black-Scholes PDE
+backward in time, with support for Rannacher smoothing.
+"""
+
+from abc import abstractmethod
+import weakref
+from collections import OrderedDict
+from copy import deepcopy
+from dataclasses import dataclass, field
+import math
+import threading
+from typing import Dict, Optional, Tuple, List, NamedTuple, Sequence
+import numpy as np
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
+
+from quantheon_engine.asset.equity.engine.base_engine import BaseEngine
+from quantheon_engine.asset.equity.product.base_equity_product import BaseEquityProduct
+from quantheon_engine.asset.equity.param import PDEParams
+from quantheon_engine.priceenv import PricingEnvironment
+from quantheon_engine.util.exceptions import PricingError, NumericalError
+from quantheon_engine.util.numerical import is_close, safe_divide
+from quantheon_engine.util.enum.option_enums import ExerciseType, ObservationType
+from quantheon_engine.util.enum import ObservationAggregation
+from quantheon_engine.util.enum.engine_enums import EngineType
+
+from .time_grid import TimeGrid
+from .spatial_grid import SpatialGrid
+from .backward_operator import BackwardOperator
+
+
+@dataclass(frozen=True)
+class TimeGridSpec:
+    """The three orthogonal time-grid concerns (spec §4 Component 1).
+
+    * ``align_times``  — times that MUST be grid nodes exactly: KO/coupon
+      observation dates.  They drive both node alignment and the
+      event-distribution resets, so a misalignment here is a correctness bug.
+    * ``monitor_times`` — extra nodes that improve resolution of a monitored
+      feature (daily-discrete KI) but are not alignment-critical for the
+      value/cashflow.  Empty for European/continuous/no-KI regimes.
+    * ``steps_per_day`` — resolution: fill density between mandatory nodes.
+    """
+
+    align_times: list
+    monitor_times: list = field(default_factory=list)
+    steps_per_day: float = 1.0
+
+
+# Per-market-object memoization for curve lookups and step coefficients.
+# Keyed on the CURVE OBJECTS (rate curve / dividend yield), not the mutable
+# PricingEnvironment: the established market-data update pattern is attribute
+# REPLACEMENT (env.rate_curve = new_curve), which yields a new object and
+# therefore a fresh memo — a bumped or refreshed environment can never reuse
+# stale values (codex code-review finding). Curve/dataclass objects are
+# unhashable (eq=True), so stores key on id() with a weakref eviction
+# callback plus an identity re-check; id reuse cannot alias because the
+# stored weakref must still point at the SAME object. Each memo is size-
+# bounded so long-lived processes cannot grow without bound.
+_ENV_DF_MEMO: dict = {}
+_ENV_STEP_COEFF_MEMO: dict = {}
+_DF_MEMO_MAX_ENTRIES = 200_000
+_STEP_COEFF_MEMO_MAX_ENTRIES = 64
+
+
+def _per_object_memo(market_obj, store: dict) -> Optional[dict]:
+    """Return the memo dict for a market object, or None if not weakref-able."""
+    if market_obj is None:
+        return None
+    key = id(market_obj)
+    entry = store.get(key)
+    if entry is not None and entry[0]() is market_obj:
+        return entry[1]
+    try:
+        ref = weakref.ref(market_obj, lambda _r, _k=key: store.pop(_k, None))
+    except TypeError:
+        return None
+    memo: dict = {}
+    store[key] = (ref, memo)
+    return memo
+
+
+class StepCoefficients(NamedTuple):
+    """Per-step (l, c, u) operator coefficient sets, deduped by unique triple.
+
+    ``lcu_sets[set_index[j]]`` is the operator for backward step ``j`` (the
+    interval [t_vec[j], t_vec[j+1]]). Flat market inputs produce exactly one
+    set, preserving single-operator factorization reuse; term inputs pay the
+    designed per-step rebuild (spec Component 4).
+    """
+
+    lcu_sets: list
+    set_index: np.ndarray
+    n_unique: int
+
+
+class PDESolutionResult(NamedTuple):
+    """
+    Result from PDE solving containing solution and grid data.
+
+    This type allows both price() and calculate_greeks() to share the
+    common solving logic via _solve(), eliminating code duplication.
+
+    Attributes:
+        solution_vec: Solution values at t=0 (present time)
+        x_vec: Log-price grid points
+        s_vec: Price grid points (for convenience)
+        spot_log: Log of spot price for interpolation
+    """
+
+    solution_vec: np.ndarray
+    x_vec: np.ndarray
+    s_vec: np.ndarray
+    spot_log: float
+
+
+class PDESessionOutputs(NamedTuple):
+    """One-solve session output bundle (spec sections 8/9.3 native seam).
+
+    ``solution`` is populated only when the caller asked for grid outputs and
+    the request did not short-circuit (expired / knocked-out). Event fields
+    are populated only by autocallable solvers.
+    """
+
+    npv: float
+    solution: Optional[PDESolutionResult]
+    event_stats: object
+    event_distribution: object
+
+
+class BasePDESolver(BaseEngine):
+    """
+    Abstract base class for PDE-based option pricing.
+
+    Solves the Black-Scholes PDE using finite difference methods in log-price space (x = ln(S)):
+        dV/dt + (r-q-0.5*sigma^2)*dV/dx + 0.5*sigma^2*d2V/dx^2 - r*V = 0
+
+    The PDE is solved backward in time from maturity to valuation date.
+
+    NOTE: numerical Black engine — a smile surface is collapsed to a single
+    strike-selected constant vol (sigma = get_vol(K, T)). Not smile-aware; for
+    smile-consistent dynamics use LV / SLV / Heston Monte-Carlo or PDE.
+    """
+
+    engine_type = EngineType.PDE
+
+    _shared_grid_cache: "OrderedDict[Tuple, Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]" = OrderedDict()
+    _grid_cache_max_entries: int = 128
+    _global_cache_enabled: bool = True
+    _global_cache_strategy: Optional[str] = None
+    _cache_lock = threading.Lock()
+
+    def __init__(self, params: Optional[PDEParams] = None):
+        """Initialize the PDE solver with configuration parameters."""
+        super().__init__(params if params is not None else PDEParams())
+        self._matrix_cache: Dict[Tuple[float, float], Tuple] = {}
+        self._grid_cache = self.__class__._shared_grid_cache
+        self._cache_enabled = bool(getattr(self.params, "cache_enabled", True))
+        self._cache_strategy = getattr(self.params, "cache_strategy", "standard")
+        cache_size = getattr(self.params, "grid_cache_max_entries", None)
+        if cache_size is not None:
+            self.set_grid_cache_max_entries(cache_size)
+        self._critical_points_cache: "OrderedDict[Tuple, Tuple[float, ...]]" = (
+            OrderedDict()
+        )
+        # Session-injected preparation (adapter-owned clones only; spec
+        # section 9.2). Grids/coefficients short-circuit their builders;
+        # the matrix pack is a READ-ONLY mapping consulted before the
+        # per-solve _matrix_cache — misses fall through and build locally,
+        # so correctness never depends on pack completeness.
+        self._session_grids = None
+        self._session_step_coefficients = None
+        self._session_matrix_pack = None
+        # Discrete-monitoring state shared by the barrier-family solvers
+        # (populated by _setup_observation_indices).
+        self._observation_indices: set = set()
+        self._schedule_records: Dict[int, List] = {}
+        self._schedule_aggregation: "ObservationAggregation" = (
+            ObservationAggregation.STOP_FIRST_HIT
+        )
+        self._terminal_schedule_records: List = []
+        self._has_terminal_observation: bool = False
+        self._total_tau: float = 0.0
+
+    def _setup_observation_indices(
+        self,
+        product: BaseEquityProduct,
+        pricing_env: PricingEnvironment,
+        tau: float,
+        t_vec: np.ndarray,
+        resolve_kwargs: Optional[Dict] = None,
+    ) -> None:
+        """
+        Resolve a product's discrete observation schedule onto the time grid.
+
+        Routing convention (shared by all barrier-family solvers):
+        - an observation at t=0 maps to time index 0,
+        - an observation at t=tau is recorded as a TERMINAL observation
+          (``_has_terminal_observation`` / ``_terminal_schedule_records``) and
+          must be applied in ``set_terminal_condition`` — NOT silently dropped
+          and NOT double-applied as an interior step,
+        - interior observations snap to the nearest time-grid node.
+
+        Args:
+            product: Product carrying observation_schedule / observation_dates
+            pricing_env: Pricing environment (for schedule resolution)
+            tau: Total time to maturity
+            t_vec: Time grid nodes
+            resolve_kwargs: Product-specific defaults forwarded to
+                ``ObservationSchedule.resolve`` (e.g. default_barrier /
+                default_upper / default_lower / default_payoff)
+        """
+        self._total_tau = tau
+        self._observation_indices.clear()
+        self._schedule_records.clear()
+        self._schedule_aggregation = ObservationAggregation.STOP_FIRST_HIT
+        self._terminal_schedule_records = []
+        self._has_terminal_observation = False
+
+        schedule = getattr(product, "observation_schedule", None)
+        if schedule is not None:
+            resolved_records = schedule.resolve(
+                pricing_env=pricing_env, **(resolve_kwargs or {})
+            )
+            self._schedule_aggregation = schedule.aggregation_mode
+            if self._schedule_aggregation in (
+                ObservationAggregation.BEST,
+                ObservationAggregation.WORST,
+            ):
+                raise PricingError(
+                    f"PDE solver does not support aggregation mode "
+                    f"{self._schedule_aggregation.value}"
+                )
+            for rec in resolved_records:
+                if is_close(rec.observation_time, 0.0):
+                    self._observation_indices.add(0)
+                    self._schedule_records.setdefault(0, []).append(rec)
+                elif is_close(rec.observation_time, tau):
+                    self._terminal_schedule_records.append(rec)
+                    self._has_terminal_observation = True
+                elif 0.0 < rec.observation_time < tau:
+                    idx = int(np.argmin(np.abs(t_vec - rec.observation_time)))
+                    self._observation_indices.add(idx)
+                    self._schedule_records.setdefault(idx, []).append(rec)
+        elif (
+            getattr(product, "observation_type", None) == ObservationType.DISCRETE
+            and getattr(product, "observation_dates", None) is not None
+        ):
+            for obs_time in product.observation_dates:
+                if is_close(obs_time, 0.0):
+                    self._observation_indices.add(0)
+                elif is_close(obs_time, tau):
+                    self._has_terminal_observation = True
+                elif 0.0 < obs_time < tau:
+                    idx = int(np.argmin(np.abs(t_vec - obs_time)))
+                    self._observation_indices.add(idx)
+
+    def _resolved_terminal_payoffs(
+        self,
+        product: BaseEquityProduct,
+        pricing_env: PricingEnvironment,
+        default_payoff: float,
+    ) -> List[Tuple]:
+        """
+        Terminal observation records paired with settlement-discounted payoffs.
+
+        Returns ``[(record_or_None, payoff), ...]``: the terminal schedule
+        records when the product is discretely monitored and the schedule
+        observes at t=T, else a single ``(None, default_payoff)`` entry (the
+        product-level default for continuous monitoring or date-list
+        schedules). Record payoffs with a settlement_time are discounted back
+        to maturity via the forward discount factor.
+        """
+        records = (
+            self._terminal_schedule_records
+            if (
+                getattr(product, "observation_type", None)
+                == ObservationType.DISCRETE
+                and self._terminal_schedule_records
+            )
+            else [None]
+        )
+        out = []
+        for rec in records:
+            payoff = rec.payoff if rec is not None else default_payoff
+            if rec is not None and rec.settlement_time is not None:
+                payoff = self._cashflow_value_at_time(
+                    pricing_env=pricing_env,
+                    cashflow=payoff,
+                    current_time=self._total_tau,
+                    settlement_time=rec.settlement_time,
+                )
+            out.append((rec, payoff))
+        return out
+
+    @classmethod
+    def clear_grid_cache(cls) -> None:
+        """Clear the shared grid cache for this solver class."""
+        with cls._cache_lock:
+            cls._shared_grid_cache.clear()
+
+    @classmethod
+    def set_cache_enabled(cls, enabled: bool, clear: bool = False) -> None:
+        """Enable or disable cache usage for this solver class."""
+        cls._global_cache_enabled = bool(enabled)
+        if clear:
+            cls.clear_grid_cache()
+
+    @classmethod
+    def set_cache_strategy(cls, strategy: str, clear: bool = False) -> None:
+        """Set the cache strategy for this solver class."""
+        if strategy not in ("disable", "strict", "standard", "aggressive"):
+            raise PricingError(
+                "cache_strategy must be one of disable, strict, standard, aggressive, got "
+                f"{strategy}"
+            )
+        cls._global_cache_strategy = strategy
+        if clear:
+            cls.clear_grid_cache()
+
+    @classmethod
+    def set_grid_cache_max_entries(cls, max_entries: int) -> None:
+        """Set maximum number of grid entries to keep in cache."""
+        if max_entries <= 0:
+            raise PricingError(
+                f"Grid cache size must be positive, got {max_entries}"
+            )
+        with cls._cache_lock:
+            cls._grid_cache_max_entries = max_entries
+            while len(cls._shared_grid_cache) > cls._grid_cache_max_entries:
+                cls._shared_grid_cache.popitem(last=False)
+
+    def _is_cache_enabled(self) -> bool:
+        return self._resolve_cache_strategy() != "disable"
+
+    def _resolve_cache_strategy(self) -> str:
+        if not self.__class__._global_cache_enabled or not self._cache_enabled:
+            return "disable"
+        strategy = self.__class__._global_cache_strategy
+        if strategy is None:
+            strategy = self._cache_strategy
+        return strategy
+
+    def create_bump_context(
+        self, product: BaseEquityProduct, pricing_env: PricingEnvironment
+    ) -> "BasePDESolver":
+        """
+        Return a PDE solver clone with the base spatial domain frozen.
+
+        Auto spatial bounds depend on market drift/volatility. Freezing the
+        base valuation bounds keeps rate, dividend, volatility, and theta bumps
+        from mixing true market sensitivity with domain movement noise.
+        """
+        spot = pricing_env.spot
+        tau = product.get_maturity(pricing_env)
+        if tau <= 0:
+            return self
+
+        strike = getattr(product, "strike", spot)
+        r = pricing_env.get_rate(tau)
+        q = pricing_env.get_div_yield(tau)
+        sigma = pricing_env.get_vol(strike, tau)
+        barriers = self._get_barriers(product)
+        s_min, s_max = self._resolve_spatial_bounds(
+            product, spot, sigma, tau, r, q, barriers
+        )
+        # Freeze the critical points at the base spot too [§11.4]: otherwise
+        # include_spot_in_critical_points re-snaps the grid to a bumped spot,
+        # so a spot bump mixes true delta/gamma with grid-movement noise.
+        frozen_critical = tuple(
+            self._resolve_critical_points(product, pricing_env, spot, barriers)
+        )
+
+        fixed_params = deepcopy(self.params)
+        fixed_params.s_min = float(s_min)
+        fixed_params.s_max = float(s_max)
+        fixed_params.frozen_critical_points = frozen_critical
+        return type(self)(params=fixed_params)
+
+    def _freeze_cache_value(self, value):
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, (list, tuple)):
+            return tuple(self._freeze_cache_value(v) for v in value)
+        if isinstance(value, dict):
+            return tuple(
+                sorted(
+                    (self._freeze_cache_value(k), self._freeze_cache_value(v))
+                    for k, v in value.items()
+                )
+            )
+        return repr(value)
+
+    def _cache_value_is_simple(
+        self, value, depth: int, max_depth: int, max_len: int
+    ) -> bool:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return True
+        if depth >= max_depth:
+            return False
+        if isinstance(value, (list, tuple)):
+            if len(value) > max_len:
+                return False
+            return all(
+                self._cache_value_is_simple(v, depth + 1, max_depth, max_len)
+                for v in value
+            )
+        if isinstance(value, dict):
+            if len(value) > max_len:
+                return False
+            return all(
+                self._cache_value_is_simple(k, depth + 1, max_depth, max_len)
+                and self._cache_value_is_simple(v, depth + 1, max_depth, max_len)
+                for k, v in value.items()
+            )
+        return False
+
+    def _cache_dict_is_reasonable(
+        self, attrs: Dict, max_depth: int = 2, max_len: int = 64
+    ) -> bool:
+        if len(attrs) > max_len:
+            return False
+        for value in attrs.values():
+            if not self._cache_value_is_simple(value, 0, max_depth, max_len):
+                return False
+        return True
+
+    def _product_cache_token(self, product: BaseEquityProduct, strategy: str) -> Tuple[str, object]:
+        if strategy == "strict":
+            return ("id", id(product))
+        key_fn = getattr(product, "cache_key", None)
+        if callable(key_fn):
+            return ("key", self._freeze_cache_value(key_fn()))
+        if strategy in ("standard", "aggressive"):
+            attrs = getattr(product, "__dict__", None)
+            if attrs is not None and self._cache_dict_is_reasonable(attrs):
+                return ("dict", self._freeze_cache_value(attrs))
+            if strategy == "aggressive":
+                return ("repr", repr(product))
+        return ("id", id(product))
+
+    def _params_cache_key(self) -> Tuple:
+        params: PDEParams = self.params
+        return (
+            params.grid_size,
+            params.time_steps,
+            params.adaptive_grid,
+            params.grid_cache_max_entries,
+            params.auto_grid,
+            params.s_min,
+            params.s_max,
+            params.time_grid_type,
+            params.grade_exponent,
+            params.bus_days_in_year,
+            params.event_steps_per_day,
+            params.event_min_steps_per_interval,
+            params.max_time_steps,
+            params.log_dx_target,
+            params.max_grid_size,
+            params.include_spot_in_critical_points,
+            params.rannacher_at_events,
+            params.event_theta,
+            params.event_rannacher_steps,
+            params.barrier_refine_log_width,
+            params.barrier_refine_levels,
+            params.barrier_domain_expand,
+            params.boundary_mode,
+            params.theta,
+            params.use_rannacher,
+            params.rannacher_steps,
+            params.frozen_critical_points,
+            getattr(params, "ki_monitoring_mode", None),
+        )
+
+    def _grid_cache_key(
+        self,
+        product: BaseEquityProduct,
+        pricing_env: PricingEnvironment,
+        spot: float,
+        sigma: float,
+        tau: float,
+        r: float,
+        q: float,
+    ) -> Tuple:
+        barriers = tuple(
+            sorted(
+                [
+                    round(b, 12)
+                    for b in self._get_barriers(product)
+                    if b is not None
+                ]
+            )
+        )
+        event_times = tuple(
+            sorted(
+                [round(t, 12) for t in (self._get_event_times(product, tau) or [])]
+            )
+        )
+        critical_points = self._get_cached_critical_points(product, pricing_env, spot)
+        return (
+            f"{product.__class__.__module__}.{product.__class__.__qualname__}",
+            round(spot, 12),
+            round(sigma, 12),
+            round(tau, 12),
+            round(r, 12),
+            round(q, 12),
+            barriers,
+            event_times,
+            critical_points,
+            self._params_cache_key(),
+        )
+
+    @abstractmethod
+    def set_terminal_condition(
+        self,
+        grid: np.ndarray,
+        x_vec: np.ndarray,
+        s_vec: np.ndarray,
+        product: BaseEquityProduct,
+        pricing_env: PricingEnvironment,
+    ) -> None:
+        """Set the terminal condition (payoff at maturity)."""
+        pass
+
+    @abstractmethod
+    def set_boundary_conditions(
+        self,
+        grid: np.ndarray,
+        x_vec: np.ndarray,
+        s_vec: np.ndarray,
+        t_idx: int,
+        tau: float,
+        product: BaseEquityProduct,
+        pricing_env: PricingEnvironment,
+    ) -> None:
+        """Set boundary conditions at the spatial edges for a given time step."""
+        pass
+
+    def get_critical_points(
+        self, product: BaseEquityProduct, pricing_env: PricingEnvironment
+    ) -> List[float]:
+        """Return a list of critical prices (e.g., strikes) for grid concentration."""
+        points = []
+        if hasattr(product, "strike") and product.strike > 0:
+            points.append(product.strike)
+        return points
+
+    def _solve(
+        self, product: BaseEquityProduct, pricing_env: PricingEnvironment
+    ) -> PDESolutionResult:
+        """
+        Core PDE solving logic shared by price() and calculate_greeks().
+
+        This method contains all the common grid building, terminal condition setup,
+        and time stepping logic. Subclasses can override this method to implement
+        custom solving strategies (e.g., two-surface approach for Snowball).
+
+        Args:
+            product: The equity product to price
+            pricing_env: Pricing environment with market data
+
+        Returns:
+            PDESolutionResult containing solution vector and grid data
+
+        Note:
+            This method assumes tau > 0 (not expired). Callers should handle
+            the expired case before calling _solve().
+        """
+        spot = pricing_env.spot
+        tau = product.get_maturity(pricing_env)
+
+        strike = getattr(product, "strike", spot)
+        r = pricing_env.get_rate(tau)
+        q = pricing_env.get_div_yield(tau)
+        sigma = pricing_env.get_vol(strike, tau)
+
+        # This PDE solver diffuses with a single strike-selected constant vol;
+        # a smile surface is collapsed (skew ignored). Make that explicit.
+        from quantheon_engine.param.vol.collapse_guard import guard_constant_vol
+        guard_constant_vol(
+            pricing_env.vol_surface, type(self).__name__,
+            strict=getattr(self.params, "strict_smile", False),
+        )
+
+        # 1. Discretization
+        x_vec, s_vec, dx_vec, t_vec, dt_vec = self._build_grids(
+            product, pricing_env, spot, sigma, tau, r, q
+        )
+
+        # 2. Setup System
+        grid = np.zeros((len(x_vec), len(t_vec)))
+        self.set_terminal_condition(grid, x_vec, s_vec, product, pricing_env)
+
+        l, c, u = self._calculate_coefficients(r, q, sigma, dx_vec, len(x_vec))
+        A = self._build_operator_matrix(l, c, u, len(x_vec))
+
+        # Term-structure step coefficients: one set for flat inputs (exact
+        # scalar substitution -> zero behavior change), one per unique
+        # forward triple otherwise (designed per-step rebuild).
+        sc = self._step_coefficients_for_solve(
+            pricing_env, strike, t_vec, dx_vec, len(x_vec)
+        )
+        sc = self._flat_exact_step_coefficients(sc, r, q, sigma, dx_vec, len(x_vec))
+        step_coeffs = None if sc.n_unique == 1 else sc
+
+        # 3. Solve
+        self._time_stepping(
+            grid,
+            A,
+            l,
+            u,
+            x_vec,
+            s_vec,
+            t_vec,
+            dt_vec,
+            product,
+            pricing_env,
+            r,
+            q,
+            sigma,
+            tau,
+            step_coeffs=step_coeffs,
+        )
+
+        return PDESolutionResult(
+            solution_vec=grid[:, 0],
+            x_vec=x_vec,
+            s_vec=s_vec,
+            spot_log=np.log(spot),
+        )
+
+    def _prepare_solve_state(
+        self, product: BaseEquityProduct, pricing_env: PricingEnvironment
+    ):
+        """_solve's state preamble, shared with session preparation.
+
+        The base family carries no pre-grid solve state; the two-surface
+        autocallable solvers override this (KI regime, valuation flags,
+        barrier level) and BOTH their _solve and the session adapter's
+        prepare() call it, so grid-key evaluation on a fresh clone sees the
+        same state a direct solve would.
+        """
+        return None
+
+    def _price_with_solution(
+        self, product: BaseEquityProduct, pricing_env: PricingEnvironment
+    ) -> Tuple[float, Optional[PDESolutionResult]]:
+        """price()'s preamble + one solve; None solution = short-circuit.
+
+        Native session seam: valid only where ``price`` delegates to it (the
+        2D ADI autocallable solvers override ``price`` entirely and never use
+        this).
+        """
+        spot = pricing_env.spot
+        tau = product.get_maturity(pricing_env)
+
+        if tau <= 0:
+            return self._calculate_intrinsic(product, spot), None
+
+        result = self._solve(product, pricing_env)
+        return (
+            self._interpolate_price(result.solution_vec, result.x_vec, result.spot_log),
+            result,
+        )
+
+    def price(
+        self, product: BaseEquityProduct, pricing_env: PricingEnvironment
+    ) -> float:
+        """Price the option using the PDE finite difference method."""
+        return self._price_with_solution(product, pricing_env)[0]
+
+    def _session_outputs(
+        self,
+        product: BaseEquityProduct,
+        pricing_env: PricingEnvironment,
+        want_events: bool = False,
+        want_grid: bool = False,
+        streams: Optional[frozenset] = None,
+    ) -> PDESessionOutputs:
+        """One value solve serving PV (+ grid projection). Event fields are
+        autocallable-only; the base family always returns them as None."""
+        npv, solution = self._price_with_solution(product, pricing_env)
+        return PDESessionOutputs(
+            npv=float(npv),
+            solution=solution if want_grid else None,
+            event_stats=None,
+            event_distribution=None,
+        )
+
+    def calculate_greeks(
+        self, product: BaseEquityProduct, pricing_env: PricingEnvironment
+    ) -> Dict[str, float]:
+        """Calculate Delta and Gamma directly from the PDE solution surface."""
+        spot = pricing_env.spot
+        tau = product.get_maturity(pricing_env)
+
+        if tau <= 0:
+            return {
+                "price": self._calculate_intrinsic(product, spot),
+                "delta": self._intrinsic_delta(product, spot),
+                "gamma": 0.0,
+            }
+
+        result = self._solve(product, pricing_env)
+        price = self._interpolate_price(result.solution_vec, result.x_vec, result.spot_log)
+        delta, gamma = self._calculate_delta_gamma(
+            result.solution_vec, result.x_vec, result.spot_log, spot
+        )
+
+        return {"price": price, "delta": delta, "gamma": gamma}
+
+    def calculate_spot_greeks_curve(
+        self,
+        product: BaseEquityProduct,
+        pricing_env: PricingEnvironment,
+        spot_levels: Sequence[float],
+    ) -> list[dict[str, float | str]]:
+        """Interpolate a spot Greeks curve from one PDE solve."""
+        spots = np.asarray([float(spot) for spot in spot_levels], dtype=float)
+        if spots.size == 0:
+            return []
+        if not np.all(np.isfinite(spots)) or np.any(spots <= 0.0):
+            raise ValueError("spot levels must be positive and finite")
+        if product.get_maturity(pricing_env) <= 0:
+            return super().calculate_spot_greeks_curve(product, pricing_env, spots)
+
+        result = self._solve(product, pricing_env)
+        return self._grid_projection_from_solution(result, spots)
+
+    def _grid_projection_from_solution(
+        self,
+        result: PDESolutionResult,
+        spot_levels: Optional[Sequence[float]] = None,
+    ) -> list[dict[str, float | str]]:
+        """Project price/delta/gamma from one solved surface (native session
+        seam shared with ``calculate_spot_greeks_curve``). ``spot_levels``
+        None projects at the grid nodes themselves."""
+        prices = np.asarray(result.solution_vec, dtype=float)
+        deltas = np.gradient(prices, result.s_vec, edge_order=2)
+        gammas = np.gradient(deltas, result.s_vec, edge_order=2)
+        spots = np.asarray(
+            result.s_vec if spot_levels is None else spot_levels, dtype=float
+        )
+        return [
+            {
+                "spot": float(spot),
+                "price": float(np.interp(spot, result.s_vec, prices)),
+                "delta": float(np.interp(spot, result.s_vec, deltas)),
+                "gamma": float(np.interp(spot, result.s_vec, gammas)),
+                "calculation_mode": "engine_grid",
+            }
+            for spot in spots
+        ]
+
+    def _build_grids(
+        self,
+        product: BaseEquityProduct,
+        pricing_env: PricingEnvironment,
+        spot: float,
+        sigma: float,
+        tau: float,
+        r: float,
+        q: float,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Construct the spatial and temporal grids for solving the PDE."""
+        if self._session_grids is not None:
+            return self._session_grids
+        if not self._is_cache_enabled():
+            return self._build_grids_uncached(
+                product, pricing_env, spot, sigma, tau, r, q
+            )
+
+        cache_key = self._grid_cache_key(product, pricing_env, spot, sigma, tau, r, q)
+        with self.__class__._cache_lock:
+            cached = self._grid_cache.get(cache_key)
+            if cached is not None:
+                self._grid_cache.move_to_end(cache_key)
+                return cached
+
+        barriers = self._get_barriers(product)
+        s_min, s_max = self._resolve_spatial_bounds(
+            product, spot, sigma, tau, r, q, barriers
+        )
+        critical_points = self._resolve_critical_points(
+            product, pricing_env, spot, barriers
+        )
+
+        grid_size, use_adaptive = self._resolve_spatial_config(
+            barriers, critical_points, s_min, s_max
+        )
+
+        x_vec, s_vec, dx_vec = SpatialGrid.build(
+            s_min,
+            s_max,
+            grid_size,
+            critical_points=critical_points,
+            use_adaptive=use_adaptive,
+        )
+
+        t_vec, dt_vec = self._resolve_time_grid(product, tau, barriers)
+
+        result = (x_vec, s_vec, dx_vec, t_vec, dt_vec)
+        with self.__class__._cache_lock:
+            self._grid_cache[cache_key] = result
+            self._grid_cache.move_to_end(cache_key)
+            if len(self._grid_cache) > self._grid_cache_max_entries:
+                self._grid_cache.popitem(last=False)
+        return result
+
+    def _build_grids_uncached(
+        self,
+        product: BaseEquityProduct,
+        pricing_env: PricingEnvironment,
+        spot: float,
+        sigma: float,
+        tau: float,
+        r: float,
+        q: float,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        barriers = self._get_barriers(product)
+        s_min, s_max = self._resolve_spatial_bounds(
+            product, spot, sigma, tau, r, q, barriers
+        )
+        critical_points = self._resolve_critical_points(
+            product, pricing_env, spot, barriers
+        )
+        grid_size, use_adaptive = self._resolve_spatial_config(
+            barriers, critical_points, s_min, s_max
+        )
+        x_vec, s_vec, dx_vec = SpatialGrid.build(
+            s_min,
+            s_max,
+            grid_size,
+            critical_points=critical_points,
+            use_adaptive=use_adaptive,
+        )
+        t_vec, dt_vec = self._resolve_time_grid(product, tau, barriers)
+        return x_vec, s_vec, dx_vec, t_vec, dt_vec
+
+    def _resolve_spatial_bounds(
+        self, product, spot, sigma, tau, r, q, barriers
+    ) -> Tuple[float, float]:
+        """Determine domain boundaries, optionally clamping to knock-out barriers."""
+        params: PDEParams = self.params
+
+        # Base bounds calculation
+        if params.s_min > 0 and params.s_max > 0:
+            s_min, s_max = params.s_min, params.s_max
+        else:
+            strike = getattr(product, "strike", spot)
+            s_min, s_max = SpatialGrid.calculate_auto_bounds(
+                spot, sigma, tau, r, q, strike=strike, barriers=barriers
+            )
+            s_min = params.s_min if params.s_min > 0 else s_min
+            s_max = params.s_max if params.s_max > 0 else s_max
+
+        # Continuous knock-out barriers define the survival domain boundaries
+        obs_type = getattr(product, "observation_type", None)
+        is_ko = getattr(product, "is_knock_out", False)
+
+        if obs_type == ObservationType.CONTINUOUS and is_ko:
+            if hasattr(product, "lower_barrier") and hasattr(product, "upper_barrier"):
+                lb, ub = getattr(product, "lower_barrier", 0), getattr(
+                    product, "upper_barrier", 0
+                )
+                if lb > 0 and params.s_min <= 0:
+                    s_min = float(lb)
+                if ub > 0 and params.s_max <= 0:
+                    s_max = float(ub)
+            elif hasattr(product, "barrier"):
+                b = getattr(product, "barrier", 0)
+                if b > 0:
+                    if getattr(product, "is_up_barrier", False):
+                        if params.s_max <= 0:
+                            s_max = float(b)
+                    elif params.s_min <= 0:
+                        s_min = float(b)
+
+        if s_min >= s_max:
+            raise PricingError(f"Invalid spatial bounds: [{s_min}, {s_max}]")
+
+        if params.barrier_domain_expand > 0.0 and barriers:
+            expand = params.barrier_domain_expand
+            for barrier in barriers:
+                if barrier is None or barrier <= 0:
+                    continue
+                if barrier >= spot:
+                    s_max = max(s_max, barrier * (1.0 + expand))
+                else:
+                    s_min = min(s_min, barrier * max(1.0 - expand, 1e-6))
+            if s_min >= s_max:
+                raise PricingError(
+                    f"Invalid spatial bounds after expansion: [{s_min}, {s_max}]"
+                )
+
+        return s_min, s_max
+
+    def _resolve_critical_points(
+        self, product, pricing_env, spot, barriers
+    ) -> List[float]:
+        """Aggregate all key price levels for grid concentration."""
+        raw_points = self._get_cached_critical_points(product, pricing_env, spot)
+        return self._merge_critical_points(raw_points, spot, barriers)
+
+    def _merge_critical_points(
+        self, raw_points: Tuple[float, ...], spot: float, barriers: List[float]
+    ) -> List[float]:
+        """Merge raw critical points with dynamic points (spot/barriers)."""
+        params: PDEParams = self.params
+
+        # Frozen (bump-context) critical points are used verbatim so the grid is
+        # invariant to spot/vol/rate/div bumps [§11.4].
+        if params.frozen_critical_points is not None:
+            return sorted(
+                {float(p) for p in params.frozen_critical_points if p is not None and p > 0}
+            )
+
+        points = list(raw_points)
+
+        if params.auto_grid:
+            if params.include_spot_in_critical_points and spot > 0:
+                points.append(spot)
+            points.extend([b for b in barriers if b is not None and b > 0])
+            if params.barrier_refine_log_width > 0.0 and params.barrier_refine_levels > 0:
+                for barrier in [b for b in barriers if b is not None and b > 0]:
+                    for level in range(1, params.barrier_refine_levels + 1):
+                        width = params.barrier_refine_log_width * level
+                        points.append(barrier * math.exp(width))
+                        points.append(barrier * math.exp(-width))
+
+        return sorted(list(set([p for p in points if p is not None and p > 0])))
+
+    def _resolve_spatial_config(
+        self, barriers, critical_points, s_min, s_max
+    ) -> Tuple[int, bool]:
+        """Determine required grid size and whether to use adaptive spacing."""
+        params: PDEParams = self.params
+        size = params.grid_size
+        adaptive = params.adaptive_grid
+
+        if not params.auto_grid:
+            return size, adaptive
+
+        if len(barriers) > 0 or len(critical_points) > 1:
+            adaptive = True
+
+        if adaptive and critical_points:
+            active = [p for p in critical_points if s_min < p < s_max]
+            if active:
+                x_points = np.log(np.array([s_min] + sorted(active) + [s_max]))
+                total_range = x_points[-1] - x_points[0]
+                # Heuristic: ensure we have at least capacity to resolve sensitive regions
+                suggested = int(total_range / (params.log_dx_target * 2.0))
+                size = min(max(size, suggested), params.max_grid_size)
+
+        return size, adaptive
+
+    def _time_grid_spec(self, product, tau) -> "TimeGridSpec":
+        """Decoupled time-grid concerns for this product (spec §4 Component 1).
+
+        Base default: align to the generic observation schedule; no KI-monitor
+        concept (that belongs to autocallable solvers, which override this);
+        resolution from params.  Returns interior times only (0 < t < tau).
+        """
+        align = [
+            t for t in (self._get_event_times(product, tau) or []) if 0.0 < t < tau
+        ]
+        return TimeGridSpec(
+            align_times=sorted(set(align)),
+            monitor_times=[],
+            steps_per_day=float(self.params.event_steps_per_day),
+        )
+
+    def _resolve_time_grid(
+        self, product, tau, barriers
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Build the time grid from the decoupled ``_time_grid_spec`` seam.
+
+        When the product has mandatory event nodes (KO/coupon alignment plus any
+        KI-monitor times), the grid is built by ``TimeGrid.build_mandatory``:
+        every event time lands on a node exactly, and resolution between nodes is
+        set solely by ``steps_per_day`` (no per-interval floor).  This path is
+        market-independent — it depends only on ``tau``, the schedule,
+        ``steps_per_day`` and params — so spot/vol/rate/div bumps reprice on an
+        identical grid [§4.5], and it always feeds the day-based resolution
+        params, fixing the historical ``auto_grid=False`` param drop (root cause
+        2) that inflated daily-KI grids ~10x.
+
+        When there are no discrete event nodes (continuous barriers, American,
+        European), the base resolution heuristics are preserved unchanged.
+        """
+        params: PDEParams = self.params
+        spec = self._time_grid_spec(product, tau)
+        mandatory = sorted(
+            {
+                t
+                for t in (list(spec.align_times) + list(spec.monitor_times))
+                if 0.0 < t < tau
+            }
+        )
+
+        # Event alignment engages when the config wants an event-aligned grid:
+        # auto_grid (auto-selects alignment when events exist, as before) or an
+        # explicit event grid type. An explicit auto_grid=False + uniform/graded
+        # request is honored literally (plain grid), matching prior behavior.
+        want_event_aligned = params.auto_grid or params.time_grid_type in (
+            "event_aligned",
+            "event_clustered",
+        )
+        if mandatory and want_event_aligned:
+            return TimeGrid.build_mandatory(
+                tau,
+                mandatory,
+                steps_per_day=spec.steps_per_day,
+                day_count=int(params.bus_days_in_year),
+                max_steps_total=params.max_time_steps,
+            )
+
+        # No event alignment requested: preserve the base resolution heuristics.
+        obs_type = getattr(product, "observation_type", None)
+        has_barriers = len(barriers) > 0
+
+        if not params.auto_grid:
+            return TimeGrid.build(
+                tau,
+                params.time_steps,
+                method=params.time_grid_type,
+                event_times=None,
+                grade_exponent=params.grade_exponent,
+            )
+
+        days = max(1, int(round(tau * float(params.bus_days_in_year))))
+        suggested = days
+        if has_barriers:
+            if obs_type == ObservationType.CONTINUOUS:
+                suggested = int(round(params.event_steps_per_day * float(days)))
+            else:
+                suggested = int(round(2.0 * float(days)))
+        elif getattr(product, "exercise_type", None) == ExerciseType.AMERICAN:
+            suggested = int(round(1.5 * float(days)))
+
+        steps = min(max(params.time_steps, suggested), params.max_time_steps)
+        method = params.time_grid_type if params.time_grid_type != "uniform" else "uniform"
+        return TimeGrid.build(
+            tau,
+            steps,
+            method=method,
+            event_times=None,
+            grade_exponent=params.grade_exponent,
+        )
+
+    def _step_coefficients_for_solve(
+        self,
+        pricing_env: PricingEnvironment,
+        ref_strike: float,
+        t_vec: np.ndarray,
+        dx_vec: np.ndarray,
+        num_x: int,
+    ) -> StepCoefficients:
+        """Session-injection dispatch: an injected artifact (PRE-flat-exact;
+        the caller still applies _flat_exact_step_coefficients, which is
+        deterministic and value-identical) short-circuits the build."""
+        if self._session_step_coefficients is not None:
+            return self._session_step_coefficients
+        return self._build_step_coefficients(
+            pricing_env, ref_strike, t_vec, dx_vec, num_x
+        )
+
+    def _build_step_coefficients(
+        self,
+        pricing_env: PricingEnvironment,
+        ref_strike: float,
+        t_vec: np.ndarray,
+        dx_vec: np.ndarray,
+        num_x: int,
+    ) -> StepCoefficients:
+        """Sample forward (r, q, sigma) per time step and build operator sets."""
+        from quantheon_engine.priceenv.term_sampling import TermCoefficients
+
+        memo = _per_object_memo(pricing_env.rate_curve, _ENV_STEP_COEFF_MEMO)
+        if memo is not None:
+            mkey = (
+                float(ref_strike),
+                np.asarray(t_vec, dtype=float).tobytes(),
+                np.asarray(dx_vec, dtype=float).tobytes(),
+                int(num_x),
+            )
+            cached = memo.get(mkey)
+            # identity re-check: replacing div_yield / vol_surface on the env
+            # must invalidate (the memo key is only the rate curve)
+            if cached is not None and (
+                cached[0] is pricing_env.div_yield
+                and cached[1] is pricing_env.vol_surface
+            ):
+                return cached[2]
+
+        tc = TermCoefficients.from_env(
+            pricing_env, np.asarray(t_vec, dtype=float), ref_strike=float(ref_strike)
+        )
+        n_steps = len(t_vec) - 1
+        # 12 decimals (same precision as the dt cache keys) absorbs DF
+        # round-trip ulp noise so flat curves dedupe to ONE set
+        triples = np.column_stack(
+            (
+                np.round(tc.fwd_rates, 12),
+                np.round(tc.fwd_carry, 12),
+                np.round(tc.step_vols, 12),
+            )
+        )
+        uniq, set_index = np.unique(triples, axis=0, return_inverse=True)
+        n_unique = uniq.shape[0]
+
+        # Vectorized _calculate_coefficients over all unique triples at once
+        r_u, q_u, sig_u = uniq[:, 0:1], uniq[:, 1:2], uniq[:, 2:3]  # (n_unique, 1)
+        mu = r_u - q_u - 0.5 * sig_u * sig_u
+        D = 0.5 * sig_u * sig_u
+        dx_vec = np.asarray(dx_vec, dtype=float)
+        l = np.zeros((n_unique, num_x))
+        c = np.zeros((n_unique, num_x))
+        u = np.zeros((n_unique, num_x))
+        if is_close(float(np.max(dx_vec)), float(np.min(dx_vec))):
+            dx = dx_vec[0]
+            l[:, :] = D / (dx * dx) - mu / (2.0 * dx)
+            c[:, :] = -2.0 * D / (dx * dx) - r_u
+            u[:, :] = D / (dx * dx) + mu / (2.0 * dx)
+        else:
+            h_m, h_p = dx_vec[:-1], dx_vec[1:]
+            h_sum, h_prod = h_m + h_p, h_m * h_p
+            l[:, 1:-1] = 2.0 * D / (h_m * h_sum) - mu * h_p / (h_m * h_sum)
+            c[:, 1:-1] = -2.0 * D / h_prod + mu * (h_p - h_m) / h_prod - r_u
+            u[:, 1:-1] = 2.0 * D / (h_p * h_sum) + mu * h_m / (h_p * h_sum)
+            l[:, 0], c[:, 0], u[:, 0] = l[:, 1], c[:, 1], u[:, 1]
+            l[:, -1], c[:, -1], u[:, -1] = l[:, -2], c[:, -2], u[:, -2]
+
+        lcu_sets = [(l[k], c[k], u[k]) for k in range(n_unique)]
+        result = StepCoefficients(
+            lcu_sets=lcu_sets,
+            set_index=np.asarray(set_index, dtype=int).reshape(n_steps),
+            n_unique=n_unique,
+        )
+        if memo is not None:
+            if len(memo) >= _STEP_COEFF_MEMO_MAX_ENTRIES:
+                memo.pop(next(iter(memo)))  # FIFO eviction
+            memo[mkey] = (pricing_env.div_yield, pricing_env.vol_surface, result)
+        return result
+
+    def _flat_exact_step_coefficients(
+        self,
+        sc: StepCoefficients,
+        r: float,
+        q: float,
+        sigma: float,
+        dx_vec: np.ndarray,
+        num_x: int,
+    ) -> StepCoefficients:
+        """Rebuild a single unique set from the exact cumulative scalars.
+
+        One unique set means the curves are constant on the grid, so the
+        cumulative scalars equal the forwards mathematically; substituting is
+        exact (not an approximation) and makes flat envs bit-identical to the
+        pre-term code path.
+        """
+        if sc.n_unique != 1:
+            return sc
+        lcu = self._calculate_coefficients(r, q, sigma, dx_vec, num_x)
+        return StepCoefficients(
+            lcu_sets=[lcu], set_index=sc.set_index, n_unique=1
+        )
+
+    def _calculate_coefficients(
+        self, r: float, q: float, sigma: float, dx_vec: np.ndarray, num_x: int
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Calculate coefficients (l, c, u) for the tridiagonal FD system."""
+        mu = r - q - 0.5 * sigma * sigma
+        D = 0.5 * sigma * sigma
+
+        if is_close(float(np.max(dx_vec)), float(np.min(dx_vec))):
+            dx = dx_vec[0]
+            l = np.full(num_x, D / (dx * dx) - mu / (2.0 * dx))
+            c = np.full(num_x, -2.0 * D / (dx * dx) - r)
+            u = np.full(num_x, D / (dx * dx) + mu / (2.0 * dx))
+        else:
+            h_m, h_p = dx_vec[:-1], dx_vec[1:]
+            h_sum, h_prod = h_m + h_p, h_m * h_p
+
+            l_diff, c_diff, u_diff = (
+                2.0 * D / (h_m * h_sum),
+                -2.0 * D / h_prod,
+                2.0 * D / (h_p * h_sum),
+            )
+            l_drift, c_drift, u_drift = (
+                -mu * h_p / (h_m * h_sum),
+                mu * (h_p - h_m) / h_prod,
+                mu * h_m / (h_p * h_sum),
+            )
+
+            l, c, u = np.zeros(num_x), np.zeros(num_x), np.zeros(num_x)
+            l[1:-1], c[1:-1], u[1:-1] = (
+                l_diff + l_drift,
+                c_diff + c_drift - r,
+                u_diff + u_drift,
+            )
+            l[0], c[0], u[0] = l[1], c[1], u[1]
+            l[-1], c[-1], u[-1] = l[-2], c[-2], u[-2]
+
+        return l, c, u
+
+    def _build_operator_matrix(
+        self, l: np.ndarray, c: np.ndarray, u: np.ndarray, num_x: int
+    ) -> sp.csc_matrix:
+        """Construct the sparse spatial operator matrix A."""
+        diagonals = [l[2:-1], c[1:-1], u[1:-2]]
+        return sp.diags(
+            diagonals, offsets=[-1, 0, 1], shape=(num_x - 2, num_x - 2), format="csc"
+        )
+
+    def _time_stepping(
+        self,
+        grid: np.ndarray,
+        A: sp.csc_matrix,
+        l: np.ndarray,
+        u: np.ndarray,
+        x_vec: np.ndarray,
+        s_vec: np.ndarray,
+        t_vec: np.ndarray,
+        dt_vec: np.ndarray,
+        product: BaseEquityProduct,
+        pricing_env: PricingEnvironment,
+        r: float,
+        q: float,
+        sigma: float,
+        tau: float,
+        step_coeffs: Optional[StepCoefficients] = None,
+    ) -> None:
+        """Backward time stepping using the Crank-Nicolson scheme."""
+        params: PDEParams = self.params
+        num_t, num_x = len(t_vec), len(x_vec)
+        I_int = sp.eye(num_x - 2, format="csc")
+        self._matrix_cache.clear()
+        self._term_A_cache: dict = {}
+
+        # Canonical damping schedule (terminal Rannacher + event smoothing),
+        # shared with all other sweeps via BackwardOperator.theta_by_step.
+        theta_by_step = BackwardOperator.theta_by_step(
+            np.asarray(t_vec),
+            np.asarray(dt_vec),
+            params,
+            self._get_event_times(product, tau),
+        )
+
+        for j in range(num_t - 2, -1, -1):
+            dt = dt_vec[j]
+            theta = float(theta_by_step[j])
+
+            if step_coeffs is not None:
+                k = int(step_coeffs.set_index[j])
+                l, _c_j, u = step_coeffs.lcu_sets[k]
+                A = self._operator_matrix_for_set(step_coeffs, k, num_x)
+            else:
+                k = 0
+            M1, M2_lu = self._get_matrices(I_int, A, dt, theta, coeff_key=k)
+            self.set_boundary_conditions(
+                grid, x_vec, s_vec, j, tau - t_vec[j], product, pricing_env
+            )
+
+            # Solve system for interior points
+            rhs = M1 @ grid[1:-1, j + 1]
+            self._inject_boundary_contributions(rhs, grid, l, u, j, dt, theta)
+            grid[1:-1, j] = M2_lu.solve(rhs)
+
+            self._apply_step_modifications(
+                grid, x_vec, s_vec, j, tau - t_vec[j], product, pricing_env
+            )
+
+    def _inject_boundary_contributions(self, rhs, grid, l, u, j, dt, theta) -> None:
+        """Add Dirichlet boundary terms to the RHS of the reduced interior system."""
+        if len(grid) > 2:
+            # Terms from V[0]
+            rhs[0] += dt * (
+                (1.0 - theta) * l[1] * grid[0, j + 1] + theta * l[1] * grid[0, j]
+            )
+            # Terms from V[-1]
+            rhs[-1] += dt * (
+                (1.0 - theta) * u[-2] * grid[-1, j + 1] + theta * u[-2] * grid[-1, j]
+            )
+
+    def _operator_matrix_for_set(
+        self, step_coeffs: StepCoefficients, k: int, num_x: int
+    ) -> sp.csc_matrix:
+        """Lazy per-unique-set sparse operator (cleared per _time_stepping)."""
+        A = self._term_A_cache.get(k)
+        if A is None:
+            l, c, u = step_coeffs.lcu_sets[k]
+            A = self._build_operator_matrix(l, c, u, num_x)
+            self._term_A_cache[k] = A
+        return A
+
+    def _get_matrices(
+        self, I: sp.csc_matrix, A: sp.csc_matrix, dt: float, theta: float,
+        coeff_key: int = 0,
+    ) -> Tuple[sp.csc_matrix, spla.SuperLU]:
+        """
+        Get or compute matrices for time stepping.
+
+        Caches LU factorizations for efficiency when dt and theta repeat.
+
+        Args:
+            I: Identity matrix
+            A: Spatial operator matrix
+            dt: Time step size
+            theta: Scheme parameter (0.5 = CN, 1.0 = BE)
+
+        Returns:
+            Tuple of (M1, M2_lu) where:
+                M1 = I + (1-theta)*dt*A (for RHS)
+                M2_lu = LU factorization of I - theta*dt*A (for LHS)
+        """
+        # Round dt to avoid floating point comparison issues
+        key = (coeff_key, round(dt, 12), round(theta, 6))
+
+        pack = self._session_matrix_pack
+        if pack is not None:
+            hit = pack.get(key)
+            if hit is not None:
+                return hit
+
+        if self._is_cache_enabled() and key in self._matrix_cache:
+            return self._matrix_cache[key]
+
+        # Build matrices
+        M1 = I + (1.0 - theta) * dt * A
+        M2 = I - theta * dt * A
+
+        # LU factorization of M2
+        try:
+            M2_lu = spla.splu(M2)
+        except Exception as e:
+            raise NumericalError(f"Failed to factorize matrix: {e}")
+
+        if self._is_cache_enabled():
+            self._matrix_cache[key] = (M1, M2_lu)
+        return M1, M2_lu
+
+    def _apply_step_modifications(
+        self,
+        grid: np.ndarray,
+        x_vec: np.ndarray,
+        s_vec: np.ndarray,
+        t_idx: int,
+        tau: float,
+        product: BaseEquityProduct,
+        pricing_env: PricingEnvironment,
+    ) -> None:
+        """
+        Apply product-specific modifications after each time step.
+
+        Override this method for American options (early exercise)
+        or barrier options (barrier checks).
+
+        Args:
+            grid: Solution grid
+            x_vec: Log-price grid points
+            s_vec: Price grid points
+            t_idx: Current time index
+            tau: Time remaining to maturity
+            product: The option product
+            pricing_env: Pricing environment
+        """
+        pass  # Default: no modifications
+
+    def _interpolate_price(
+        self, v_vec: np.ndarray, x_vec: np.ndarray, x_target: float
+    ) -> float:
+        """
+        Interpolate option value at target log-price.
+
+        Uses linear interpolation between nearest grid points.
+
+        Args:
+            v_vec: Option values at grid points
+            x_vec: Log-price grid points
+            x_target: Target log-price
+
+        Returns:
+            Interpolated option value
+        """
+        return float(np.interp(x_target, x_vec, v_vec))
+
+    def _calculate_delta_gamma(
+        self, v_vec: np.ndarray, x_vec: np.ndarray, x_target: float, spot: float
+    ) -> Tuple[float, float]:
+        """
+        Calculate delta and gamma from the solution vector.
+
+        In log-space:
+            dV/dS = (1/S) * dV/dx
+            d2V/dS2 = (1/S^2) * (d2V/dx^2 - dV/dx)
+
+        Args:
+            v_vec: Option values at grid points
+            x_vec: Log-price grid points
+            x_target: Target log-price (ln(spot))
+            spot: Current spot price
+
+        Returns:
+            Tuple of (delta, gamma)
+        """
+        # Snap to the grid node nearest x_target (interior only)
+        idx = int(np.searchsorted(x_vec, x_target))
+        idx = max(1, min(idx, len(x_vec) - 2))
+        if idx > 1 and abs(x_vec[idx - 1] - x_target) < abs(x_vec[idx] - x_target):
+            idx -= 1
+
+        # Non-uniform three-point stencil (exact for quadratics on ANY local
+        # spacing). The symmetric formulas are only valid when h_m == h_p; on
+        # the adaptive grid the asymmetry error is proportional to gamma.
+        h_m = x_vec[idx] - x_vec[idx - 1]
+        h_p = x_vec[idx + 1] - x_vec[idx]
+        h_sum = h_m + h_p
+
+        v_m, v_0, v_p = v_vec[idx - 1], v_vec[idx], v_vec[idx + 1]
+        dv_dx = (
+            -h_p / (h_m * h_sum) * v_m
+            + (h_p - h_m) / (h_m * h_p) * v_0
+            + h_m / (h_p * h_sum) * v_p
+        )
+        d2v_dx2 = 2.0 * (
+            v_m / (h_m * h_sum) - v_0 / (h_m * h_p) + v_p / (h_p * h_sum)
+        )
+
+        # Convert to price-space derivatives AT THE NODE where the stencil
+        # was evaluated (identical to `spot` when the spot is a grid node,
+        # which is the default; consistent when x_target falls between nodes).
+        s_node = float(np.exp(x_vec[idx]))
+        delta = dv_dx / s_node
+        gamma = (d2v_dx2 - dv_dx) / (s_node**2)
+
+        return delta, gamma
+
+    @staticmethod
+    def _current_time(total_tau: float, tau_remaining: float) -> float:
+        """Elapsed time (from valuation) at a backward-induction step."""
+        return max(total_tau - tau_remaining, 0.0)
+
+    def _df_between_times(
+        self, pricing_env: PricingEnvironment, start_time: float, end_time: float
+    ) -> float:
+        """
+        Forward discount factor DF(start_time, end_time), both measured from
+        the valuation date. Term-structure consistent: DF(0,T)/DF(0,t), NOT
+        exp(-r(tau)*tau) with tau = remaining time (they coincide only under
+        a flat curve).
+
+        Memoized per pricing environment (identity-checked, strong ref held):
+        the boundary-condition path evaluates the same (t, T) pairs many
+        times per step, and term-structure curves make each curve lookup a
+        np.interp call — the memo keeps the term/flat cost ratio inside the
+        spec's 20% budget.
+        """
+        if end_time <= start_time:
+            return 1.0
+        memo = _per_object_memo(pricing_env.rate_curve, _ENV_DF_MEMO)
+        if memo is None:
+            memo = {}
+        key = (round(float(start_time), 12), round(float(end_time), 12))
+        v = memo.get(key)
+        if v is None:
+            df_end = pricing_env.get_discount_factor(end_time)
+            df_start = pricing_env.get_discount_factor(start_time)
+            v = float(safe_divide(df_end, df_start, fallback=1.0))
+            if len(memo) >= _DF_MEMO_MAX_ENTRIES:
+                memo.clear()
+            memo[key] = v
+        return v
+
+    def _carry_df_between_times(
+        self, pricing_env: PricingEnvironment, start_time: float, end_time: float
+    ) -> float:
+        """Forward dividend/carry discount factor exp(-(q(T)T - q(t)t)).
+
+        Term-structure consistent analog of _df_between_times for the carry
+        leg of asymptotic boundary conditions; equals exp(-q*(T-t)) only
+        under a flat carry curve.
+        """
+        if end_time <= start_time:
+            return 1.0
+        memo = _per_object_memo(pricing_env.div_yield, _ENV_DF_MEMO)
+        if memo is None:
+            memo = {}
+        key = ("q", round(float(start_time), 12), round(float(end_time), 12))
+        v = memo.get(key)
+        if v is None:
+            w_end = float(pricing_env.get_div_yield(end_time)) * float(end_time)
+            w_start = (
+                float(pricing_env.get_div_yield(start_time)) * float(start_time)
+                if start_time > 0.0
+                else 0.0
+            )
+            v = float(np.exp(-(w_end - w_start)))
+            if len(memo) >= _DF_MEMO_MAX_ENTRIES:
+                memo.clear()
+            memo[key] = v
+        return v
+
+    def _cashflow_value_at_time(
+        self,
+        pricing_env: PricingEnvironment,
+        cashflow: float,
+        current_time: float,
+        settlement_time: Optional[float],
+    ) -> float:
+        """Discount a cashflow from its settlement time back to current_time."""
+        if settlement_time is None or settlement_time <= current_time:
+            return float(cashflow)
+        df = self._df_between_times(pricing_env, current_time, settlement_time)
+        return float(cashflow) * df
+
+    def _calculate_intrinsic(self, product: BaseEquityProduct, spot: float) -> float:
+        """
+        Calculate intrinsic value of the option.
+
+        Args:
+            product: The option product
+            spot: Current spot price
+
+        Returns:
+            Intrinsic value
+        """
+        if hasattr(product, "get_payoff"):
+            return product.get_payoff(spot)
+        return 0.0
+
+    def _intrinsic_delta(self, product: BaseEquityProduct, spot: float) -> float:
+        """
+        Calculate delta of intrinsic value.
+
+        Args:
+            product: The option product
+            spot: Current spot price
+
+        Returns:
+            Intrinsic delta
+        """
+        multiplier = getattr(product, "contract_multiplier", 1.0)
+        if hasattr(product, "is_call") and hasattr(product, "strike"):
+            if product.is_call():
+                delta = 1.0 if spot > product.strike else 0.0
+            else:
+                delta = -1.0 if spot < product.strike else 0.0
+            return delta * multiplier
+        return 0.0 * multiplier
+
+    def _get_barriers(self, product: BaseEquityProduct) -> List[float]:
+        """Helper to collect barrier levels from known product attributes."""
+        barriers = []
+        for attr in ("barrier", "upper_barrier", "lower_barrier"):
+            if hasattr(product, attr):
+                val = getattr(product, attr)
+                if val is not None and val > 0:
+                    barriers.append(val)
+        return barriers
+
+    def _get_event_times(
+        self, product: BaseEquityProduct, tau: float
+    ) -> Optional[List[float]]:
+        """Helper to collect observation/event times."""
+        schedule = getattr(product, "observation_schedule", None)
+        if schedule is not None and getattr(schedule, "times", None):
+            return [t for t in schedule.times if 0 < t < tau]
+        for attr in ("observation_dates", "obs_times", "event_times"):
+            if hasattr(product, attr):
+                times = getattr(product, attr)
+                if times:
+                    return [t for t in times if 0 < t < tau]
+        return None
+    # -- session factorization packs (spec section 9.2) --------------------
+
+    def _pack_uses_banded(self, num_x: int) -> bool:
+        """Whether the backward march for this configuration uses the banded
+        solver path (only the two-surface family does)."""
+        return False
+
+    def _pack_banded_entry(
+        self, banded: dict, step_coeffs, l, c, u, dt, theta, coeff_key
+    ) -> None:
+        raise NotImplementedError(
+            "banded packs exist only where _pack_uses_banded is True"
+        )
+
+    def _session_factorization_packs(
+        self, product: BaseEquityProduct, pricing_env: PricingEnvironment,
+        grids, max_entries: Optional[int] = None,
+    ) -> Tuple[dict, dict]:
+        """Eagerly build the (coeff_key, dt, theta) -> matrices maps one solve
+        would lazily build, through the SAME builders the solve uses.
+
+        Numeric factorization reuse is legal only when coefficients, time
+        step, theta schedule, and scheme parameters are identical (spec
+        section 9.2); the caller keys the published pack by exactly those
+        inputs. Returns (matrix_pack, banded_pack) as plain dicts.
+
+        ``max_entries`` bounds the eager build (code-gate finding
+        2026-07-16): once the packs hold that many entries, enumeration
+        stops and the remaining keys are built lazily per solve — bitwise
+        identically, since the march's own construction is the same code.
+        The enumeration runs in march order, so the bounded pack holds the
+        keys the march requests first.
+        """
+        x_vec, s_vec, dx_vec, t_vec, dt_vec = grids
+        spot = pricing_env.spot
+        tau = product.get_maturity(pricing_env)
+        strike = getattr(product, "strike", spot)
+        r = pricing_env.get_rate(tau)
+        q = pricing_env.get_div_yield(tau)
+        sigma = pricing_env.get_vol(strike, tau)
+        num_x = len(x_vec)
+
+        sc = self._step_coefficients_for_solve(
+            pricing_env, strike, t_vec, dx_vec, num_x
+        )
+        sc = self._flat_exact_step_coefficients(sc, r, q, sigma, dx_vec, num_x)
+        step_coeffs = None if sc.n_unique == 1 else sc
+        l, c, u = self._calculate_coefficients(r, q, sigma, dx_vec, num_x)
+        A = self._build_operator_matrix(l, c, u, num_x)
+
+        theta_by_step = BackwardOperator.theta_by_step(
+            np.asarray(t_vec),
+            np.asarray(dt_vec),
+            self.params,
+            self._get_event_times(product, tau),
+        )
+        use_banded = self._pack_uses_banded(num_x)
+        banded: dict = {}
+        saved_matrix, self._matrix_cache = self._matrix_cache, {}
+        saved_term_A = getattr(self, "_term_A_cache", {})
+        self._term_A_cache = {}
+        try:
+            I_int = sp.eye(num_x - 2, format="csc")
+            for j in range(len(t_vec) - 2, -1, -1):
+                if (
+                    max_entries is not None
+                    and len(self._matrix_cache) + len(banded) >= max_entries
+                ):
+                    break
+                dt = dt_vec[j]
+                theta = float(theta_by_step[j])
+                if step_coeffs is not None:
+                    k = int(step_coeffs.set_index[j])
+                    l_j, c_j, u_j = step_coeffs.lcu_sets[k]
+                else:
+                    k = 0
+                    l_j, c_j, u_j = l, c, u
+                if use_banded:
+                    self._pack_banded_entry(
+                        banded, step_coeffs, l_j, c_j, u_j, dt, theta, k
+                    )
+                else:
+                    A_j = (
+                        self._operator_matrix_for_set(step_coeffs, k, num_x)
+                        if step_coeffs is not None
+                        else A
+                    )
+                    self._get_matrices(I_int, A_j, dt, theta, coeff_key=k)
+            matrix_pack = dict(self._matrix_cache)
+        finally:
+            self._matrix_cache = saved_matrix
+            self._term_A_cache = saved_term_A
+        return matrix_pack, banded
+
+    def _critical_points_cache_key(
+        self,
+        product: BaseEquityProduct,
+        pricing_env: PricingEnvironment,
+        spot: float,
+    ) -> Tuple:
+        strategy = self._resolve_cache_strategy()
+        return (
+            strategy,
+            f"{product.__class__.__module__}.{product.__class__.__qualname__}",
+            self._product_cache_token(product, strategy),
+            round(spot, 12),
+            pricing_env.valuation_date,
+            pricing_env.day_count_convention,
+            pricing_env.bus_days_in_year,
+        )
+
+    def _get_cached_critical_points(
+        self,
+        product: BaseEquityProduct,
+        pricing_env: PricingEnvironment,
+        spot: float,
+    ) -> Tuple[float, ...]:
+        if not self._is_cache_enabled():
+            return tuple(
+                sorted(
+                    [
+                        round(p, 12)
+                        for p in self.get_critical_points(product, pricing_env)
+                        if p is not None
+                    ]
+                )
+            )
+        key = self._critical_points_cache_key(product, pricing_env, spot)
+        cached = self._critical_points_cache.get(key)
+        if cached is not None:
+            self._critical_points_cache.move_to_end(key)
+            return cached
+        points = tuple(
+            sorted(
+                [
+                    round(p, 12)
+                    for p in self.get_critical_points(product, pricing_env)
+                    if p is not None
+                ]
+            )
+        )
+        self._critical_points_cache[key] = points
+        self._critical_points_cache.move_to_end(key)
+        max_entries = max(1, self._grid_cache_max_entries)
+        if len(self._critical_points_cache) > max_entries:
+            self._critical_points_cache.popitem(last=False)
+        return points

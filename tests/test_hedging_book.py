@@ -235,7 +235,7 @@ def test_book_hedge_persists_option_leg(session):
     assert pos.source_payload["hedge"]["leg_role"] == "gamma_vega"
     assert pos.source_payload["hedge"]["risk_run_id"] == 77
     assert pos.quantity == 2
-    # Synthesized vanilla termsheet: contract_multiplier is a native QuantArk kwarg.
+    # Synthesized vanilla termsheet: contract_multiplier is a native Quantheon Engine kwarg.
     assert pos.product_type == "EuropeanVanillaOption"
     assert pos.product_kwargs["contract_multiplier"] == 100.0
     assert pos.product_kwargs["option_type"] == "CALL"

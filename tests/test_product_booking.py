@@ -39,7 +39,7 @@ _RAW_SNOWBALL_TERMS = {
 
 def test_build_product_snowball_carries_accrual_dates():
     """build_product must produce a valid, annualized-accrual-ready Snowball
-    from raw terms — carrying initial_date/settlement_date so the QuantArk
+    from raw terms — carrying initial_date/settlement_date so the Quantheon Engine
     accrual validator passes (the gap that caused the Booking test 4 loop).
     """
     result = build_product("SnowballOption", dict(_RAW_SNOWBALL_TERMS))
@@ -52,7 +52,7 @@ def test_build_product_snowball_carries_accrual_dates():
 
 def test_book_snowball_from_raw_economic_terms_validates():
     """book_position must accept raw snowball economic terms (not hand-built
-    QuantArk kwargs) and validate them — routing through the single builder.
+    Quantheon Engine kwargs) and validate them — routing through the single builder.
     """
     spec = ProductBookingSpec(
         asset_class="equity",
@@ -299,7 +299,7 @@ def test_booking_rejects_schedule_less_snowball_with_clear_malformed_error():
 
 
 # --- Parity pass (Part a): the previously un-gated families are now validated at
-# booking. The option families arrive as complete QuantArk termsheets and take
+# booking. The option families arrive as complete Quantheon Engine termsheets and take
 # the validate-and-wrap (prebuilt=True) path, so the gate returns their terms
 # unchanged. ProductBookingSpec/normalize/build_product imports are at the top.
 _NEWLY_GATED_OPTIONS = [
@@ -357,11 +357,11 @@ def test_booking_gate_synthesizes_deltaone_family(family, fam, raw, meta_key):
         terms=dict(raw), components=[], display_name=None, source_payload={},
     )
     normalized = normalize_booking_product_spec(spec)
-    # underlying threaded from the spec top-level into the QuantArk kwargs
+    # underlying threaded from the spec top-level into the Quantheon Engine kwargs
     assert normalized.terms["underlying"] == "CSI300"
-    # persistence metadata carried as _otc_ (popped before QuantArk at price time)
+    # persistence metadata carried as _otc_ (popped before Quantheon Engine at price time)
     assert meta_key in normalized.terms
-    # the bare metadata key QuantArk rejects is gone
+    # the bare metadata key Quantheon Engine rejects is gone
     assert meta_key.removeprefix("_otc_") not in normalized.terms
 
 
@@ -384,7 +384,7 @@ def test_booking_gate_rejects_incomplete_spot_missing_s0():
 # an agent may hand-author raw vocabulary directly at book_position — the SAME
 # vocabulary the build_product tool accepts (initial_price as the S0/validation
 # spot, maturity_years or maturity_date). The booking gate must translate it via
-# synthesis instead of rejecting it with QuantArk's "Unsupported kwargs".
+# synthesis instead of rejecting it with Quantheon Engine's "Unsupported kwargs".
 def _raw_barrier_spec(maturity_terms: dict) -> ProductBookingSpec:
     return ProductBookingSpec(
         asset_class="equity", product_family="barrier",
@@ -410,7 +410,7 @@ def test_normalize_translates_raw_termsheet_vocab_barrier():
 
 def test_normalize_translates_maturity_date_barrier():
     # initial_price + maturity_date (explicit date) — maturity_date threads through
-    # as QuantArk's exercise_date rather than being rejected.
+    # as Quantheon Engine's exercise_date rather than being rejected.
     normalized = normalize_booking_product_spec(_raw_barrier_spec({"maturity_date": "2027-07-15"}))
     assert "initial_price" not in normalized.terms
     assert "maturity_date" not in normalized.terms
@@ -418,7 +418,7 @@ def test_normalize_translates_maturity_date_barrier():
 
 
 def test_normalize_translates_exercise_date_barrier():
-    # initial_price + exercise_date (the QuantArk date key itself) carries none of
+    # initial_price + exercise_date (the Quantheon Engine date key itself) carries none of
     # the maturity vocabulary, so only initial_price marks it as hand-authored — the
     # Run #143/#146 trader-rfq step-4 shape that book_position used to reject with
     # "Unsupported kwargs for BarrierOption: initial_price".
@@ -430,13 +430,13 @@ def test_normalize_translates_exercise_date_barrier():
 
 def test_initial_price_native_types_match_quantark_constructors():
     # _INITIAL_PRICE_NATIVE_TYPES is a static mirror of which gated families'
-    # QuantArk constructors accept initial_price. A QuantArk upgrade that moves one
+    # Quantheon Engine constructors accept initial_price. A Quantheon Engine upgrade that moves one
     # must fail here rather than silently re-synthesize (or reject) valid termsheets.
     import importlib
     import inspect
     import pkgutil
 
-    import quantark
+    import quantheon_engine
 
     from app.services.domains.booking import (
         _GATED_BOOKING_TYPES,
@@ -444,7 +444,7 @@ def test_initial_price_native_types_match_quantark_constructors():
     )
 
     classes: dict[str, type] = {}
-    for info in pkgutil.walk_packages(quantark.__path__, "quantark."):
+    for info in pkgutil.walk_packages(quantheon_engine.__path__, "quantheon_engine."):
         if ".product" not in info.name:
             continue
         try:
@@ -503,7 +503,7 @@ def test_normalize_preserves_precise_error_for_invalid_prebuilt_barrier():
 def test_book_barrier_from_raw_agent_vocab_persists_clean_kwargs(session):
     # Full persisted path: an agent books a barrier directly with raw term-sheet
     # vocabulary (the Run #22 step-4 shape). The position persists with the clean
-    # QuantArk kwargs, not the rejected initial_price/maturity_date.
+    # Quantheon Engine kwargs, not the rejected initial_price/maturity_date.
     portfolio = Portfolio(name="Barrier Book", base_currency="USD",
                           kind=PortfolioKind.CONTAINER.value)
     session.add(portfolio)
@@ -581,8 +581,8 @@ def test_booking_spot_persists_instrument_code_from_otc_metadata(session):
     assert row.instrument_code == "510300.SH"  # NOT the "CSI300" underlying fallback
     assert row.exchange == "SSE"
     assert row.deltaone_type == "ETF"
-    # the stored QuantArk terms carry the metadata as _otc_ (popped before pricing);
-    # the bare instrument_code kwarg QuantArk would reject is absent.
+    # the stored Quantheon Engine terms carry the metadata as _otc_ (popped before pricing);
+    # the bare instrument_code kwarg Quantheon Engine would reject is absent.
     assert booked.product_kwargs["_otc_instrument_code"] == "510300.SH"
     assert "instrument_code" not in booked.product_kwargs
 

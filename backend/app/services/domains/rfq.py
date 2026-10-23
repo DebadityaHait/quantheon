@@ -1,6 +1,6 @@
 """RFQ domain service.
 
-Thin facade over ``services/rfq.py`` and ``services/quantark.solve_rfq``. The
+Thin facade over ``services/rfq.py`` and ``services/quantheon_engine.solve_rfq``. The
 existing implementation in ``services/rfq.py`` already encapsulates the full
 RFQ lifecycle (draft -> quote -> approve -> release -> client_accepted ->
 booked); this module re-exports the lifecycle functions under
@@ -16,7 +16,7 @@ manage sessions explicitly. This matches the pattern in
 from __future__ import annotations
 
 from app.services import rfq as _rfq
-from app.services.quantark import solve_rfq as _solve_rfq
+from app.services.quantheon_engine import solve_rfq as _solve_rfq
 
 # Stateless / pure functions
 get_rfq_catalog = _rfq.get_rfq_catalog

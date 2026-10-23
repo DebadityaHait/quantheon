@@ -46,7 +46,7 @@ _SSE_HOLIDAYS: set[datetime] | None = None  # lazily populated
 
 
 def _load_sse_holidays() -> set[datetime]:
-    """Load China SSE holiday dates from QuantArk's installed CSV bundle.
+    """Load China SSE holiday dates from Quantheon Engine's installed CSV bundle.
 
     Falls back to an empty set (weekends-only calendar) when the package
     resource is unavailable.
@@ -57,7 +57,7 @@ def _load_sse_holidays() -> set[datetime]:
 
     csv_candidates: list[Path] = []
     try:
-        resource = resources.files("quantark.util.calendar").joinpath(
+        resource = resources.files("quantheon_engine.util.calendar").joinpath(
             "holidayfile/china_sse.csv"
         )
         if resource.is_file():

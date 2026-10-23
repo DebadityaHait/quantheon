@@ -2,7 +2,7 @@
 from __future__ import annotations
 from collections import defaultdict
 from typing import Any
-from app.services import quantark
+from app.services import quantheon_engine
 
 
 def group_by_underlying(positions: list[Any]) -> dict[str, list[Any]]:
@@ -63,8 +63,8 @@ def _coerce_engine_type(name, engine_types=None, product=None):
     member = _BACKTEST_VOCAB_TO_ENGINE_TYPE.get(name.strip().lower())
     if member is None:
         raise ValueError(f"Unknown backtest engine {name!r}")
-    quantark.ensure_quantark_path()
-    from quantark.util.enum.engine_enums import EngineType
+    quantheon_engine.ensure_engine_path()
+    from quantheon_engine.util.enum.engine_enums import EngineType
 
     return getattr(EngineType, member)
 
@@ -90,10 +90,10 @@ def build_books(session, positions, history, *, engine_type=None, engine_types=N
             for pos in plist:
                 excluded.append({"position_id": pos.id, "reason": f"no market history for {underlying}"})
             continue
-        # Defer the QuantArk import until we know we have history to process.
+        # Defer the Quantheon Engine import until we know we have history to process.
         if not _backtest_imported:
-            quantark.ensure_quantark_path()
-            from quantark.backtest.otc import (
+            quantheon_engine.ensure_engine_path()
+            from quantheon_engine.backtest.otc import (
                 BookAutocallableBacktestConfig,
                 BookProduct,  # noqa: F401
                 AutocallableEngineConfig,
@@ -103,16 +103,16 @@ def build_books(session, positions, history, *, engine_type=None, engine_types=N
         spot_df, vol_df, rate_df, futures_df, hedge = history[underlying]
         book_products_by_engine = []
         for pos in plist:
-            reason = quantark.risk_pricing_exclusion(pos)
+            reason = quantheon_engine.risk_pricing_exclusion(pos)
             if reason:
                 excluded.append({"position_id": pos.id, "reason": reason}); continue
             if float(getattr(pos, "quantity", 0) or 0) == 0.0:
                 excluded.append({"position_id": pos.id, "reason": "Position quantity is zero"}); continue
             try:
-                # build_product_for_position(position, market=None) returns a bare QuantArk product.
+                # build_product_for_position(position, market=None) returns a bare Quantheon Engine product.
                 # market=None is correct here: the backtest supplies time-series market data
                 # via AutocallableMarketDataSet (history arg), not a point-in-time snapshot.
-                product = quantark.build_product_for_position(pos)
+                product = quantheon_engine.build_product_for_position(pos)
             except Exception as exc:
                 excluded.append({"position_id": pos.id, "reason": f"product build failed: {exc}"}); continue
             try:

@@ -92,10 +92,10 @@ describe('BookingResultCard', () => {
     render(
       <BookingResultCard
         booking={{ ...BOOKED, status: 'failed', position_id: null,
-          error: 'booking_failed', detail: 'QuantArk rejected initial_price' }}
+          error: 'booking_failed', detail: 'Quantheon Engine rejected initial_price' }}
       />,
     );
-    expect(screen.getByText(/QuantArk rejected initial_price/)).toBeInTheDocument();
+    expect(screen.getByText(/Quantheon Engine rejected initial_price/)).toBeInTheDocument();
   });
 
   it('survives a sparse payload without crashing', () => {

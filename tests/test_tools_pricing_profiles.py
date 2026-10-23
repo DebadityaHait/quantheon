@@ -157,7 +157,7 @@ def _seed_open_curve_trade(symbol: str) -> None:
             product_type="VanillaCall",
             product_kwargs={"underlying": symbol, "maturity_date": "2026-07-02"},
             quantity=1.0, source_trade_id="T-CURVE", status="open",
-            position_kind="otc", engine_name="quantark.vanilla", engine_kwargs={},
+            position_kind="otc", engine_name="quantheon_engine.vanilla", engine_kwargs={},
             source_payload={}, mapping_status="supported",
         ))
         inst = ensure_underlying(session, symbol, source="manual", status="active")

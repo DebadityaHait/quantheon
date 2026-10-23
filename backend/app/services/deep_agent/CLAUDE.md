@@ -71,7 +71,7 @@ stack can't silently skip it.
 
 `check_term_completeness` requires the appropriate representation: raw build inputs
 (default for backwards compatibility), native product terms, or valuation market.
-Native terms use the installed QuantArk conversion/constructor gate. Scalar option
+Native terms use the installed Quantheon Engine conversion/constructor gate. Scalar option
 validation spot is not a native term. `build_product` carries original supplied
 inputs/market and typed fixing artifact references in product `source_payload`.
 The tool persistence paths reverify copied provenance against a captured build

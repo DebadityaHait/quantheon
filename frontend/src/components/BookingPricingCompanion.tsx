@@ -18,7 +18,7 @@ type Props = {
   quantity: string;
 };
 
-// The preview endpoint prices ONE LONG UNIT of the position (QuantArk has no concept
+// The preview endpoint prices ONE LONG UNIT of the position (Quantheon Engine has no concept
 // of buy/sell); direction and size live in the signed booking quantity. Scale the
 // per-unit PV and every greek by it: Price of Position = quantity × price of one unit
 // (a sell, quantity < 0, flips the sign of PV and all greeks alike). A blank/non-numeric

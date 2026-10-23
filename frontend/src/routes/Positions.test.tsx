@@ -415,7 +415,7 @@ describe('Positions', () => {
     expect(within(dialog).getByText('88')).toBeInTheDocument();
     expect(within(dialog).getByText('Product Family')).toBeInTheDocument();
     expect(within(dialog).getByText('option')).toBeInTheDocument();
-    expect(within(dialog).getByText('QuantArk Class')).toBeInTheDocument();
+    expect(within(dialog).getByText('Quantheon Engine Class')).toBeInTheDocument();
     expect(within(dialog).getAllByText('EuropeanVanillaOption').length).toBeGreaterThan(0);
   });
 

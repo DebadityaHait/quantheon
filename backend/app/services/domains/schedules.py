@@ -24,7 +24,7 @@ def add_months(d: date, months: int) -> date:
 @lru_cache(maxsize=1)
 def china_sse_holidays() -> frozenset[date]:
     try:
-        holiday_file = resources.files("quantark.util.calendar").joinpath(
+        holiday_file = resources.files("quantheon_engine.util.calendar").joinpath(
             "holidayfile/china_sse.csv"
         )
     except Exception:

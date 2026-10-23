@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from app.models import Portfolio, Position
 from app.schemas import PricingEnvironmentSnapshot
-from app.services.quantark import calculate_portfolio_risk
+from app.services.quantheon_engine import calculate_portfolio_risk
 
 
 def test_risk_row_includes_spot_and_cash_greeks(session):

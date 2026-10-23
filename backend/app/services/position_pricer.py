@@ -29,7 +29,7 @@ from .pricing_profiles import (
     resolve_pricing_parameter_row_for_position,
 )
 from .engine_configs import get_engine_config, position_with_engine, resolve_pricing_engine
-from .quantark import QuantArkResult, contract_multiplier_for_position, gross_notional_for_position, market_priced_position_inputs, price_product, usable_model_value, valuation_multiplier_for_position
+from .quantheon_engine import EngineResult, contract_multiplier_for_position, gross_notional_for_position, market_priced_position_inputs, price_product, usable_model_value, valuation_multiplier_for_position
 from .risk_engine import compute_position_greeks
 
 
@@ -469,7 +469,7 @@ def _price_position(
     if position.mapping_status != SUPPORTED_STATUS:
         return _failed(
             position,
-            position.mapping_error or "Position is not mapped to a supported QuantArk product",
+            position.mapping_error or "Position is not mapped to a supported Quantheon Engine product",
             "unsupported",
             engine_name=resolved_engine_name,
         )
@@ -653,9 +653,9 @@ def _price_position(
         **({"bus_days_in_year": bus_days} if bus_days is not None else {}),
     )
     grid_chain = _resolve_grid_chain(resolved_engine_kwargs)
-    last_priced: QuantArkResult | None = None
+    last_priced: EngineResult | None = None
     attempt_grid: int | None = None
-    priced: QuantArkResult | None = None
+    priced: EngineResult | None = None
     quantark_price: float = 0.0
     market_value: float = 0.0
     gross_notional: float = 0.0
@@ -703,7 +703,7 @@ def _price_position(
         if last_priced is not None and not last_priced.ok:
             failed = _failed(
                 position,
-                last_priced.error or "QuantArk pricing failed",
+                last_priced.error or "Quantheon Engine pricing failed",
                 "pricing",
                 market_inputs=resolved_market_inputs,
                 engine_name=resolved_engine_name,

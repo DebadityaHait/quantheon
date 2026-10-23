@@ -949,7 +949,7 @@ function PositionDetail({
                 <DetailItem label="Currency" value={row.currency} />
                 <DetailItem label="Product ID" value={row.product_id != null ? String(row.product_id) : row.product?.id != null ? String(row.product.id) : '—'} />
                 <DetailItem label="Product Family" value={row.product?.product_family ?? '—'} />
-                <DetailItem label="QuantArk Class" value={row.product?.quantark_class ?? '—'} />
+                <DetailItem label="Quantheon Engine Class" value={row.product?.quantark_class ?? '—'} />
                 <DetailItem label="Engine" value={row.engine_name ?? '—'} />
                 <DetailItem label="Mapping" value={row.mapping_status} />
               </dl>

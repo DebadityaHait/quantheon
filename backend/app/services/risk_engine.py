@@ -20,13 +20,13 @@ from .pricing_profiles import (
     resolve_pricing_parameter_row_for_position,
 )
 from .portfolio_membership import resolve_positions
-from .quantark import (
+from .quantheon_engine import (
     build_engine_for_position,
     build_pricing_env,
     build_product_for_position,
     calculate_portfolio_risk,
     gross_notional_for_position,
-    ensure_quantark_path,
+    ensure_engine_path,
     closed_position_exclusion,
     market_snapshot_for_position,
     risk_pricing_exclusion,
@@ -68,7 +68,7 @@ def snapshot_risk_position(
     """Copy normalized product and engine inputs out of the ORM session."""
     from .domains.products import (
         compatibility_terms_for_position,
-        product_family_for_quantark_class,
+        product_family_for_engine_class,
     )
 
     terms = compatibility_terms_for_position(position)
@@ -80,7 +80,7 @@ def snapshot_risk_position(
         underlying_id=getattr(position, "underlying_id", None),
         underlying=str(terms.get("underlying") or position.underlying or ""),
         product_type=str(terms.get("product_type") or position.product_type or ""),
-        product_family=product_family_for_quantark_class(
+        product_family=product_family_for_engine_class(
             str(terms.get("product_type") or position.product_type or ""),
             components=list(terms.get("components") or []),
         ),
@@ -428,8 +428,8 @@ def compute_position_greeks(
     duration of this call (the position object is not mutated).
     """
     try:
-        ensure_quantark_path()
-        from quantark.asset.equity.riskmeasures.greeks_calculator import GreeksCalculator
+        ensure_engine_path()
+        from quantheon_engine.asset.equity.riskmeasures.greeks_calculator import GreeksCalculator
     except Exception as exc:  # pragma: no cover - import guard
         return {
             "ok": False,
@@ -503,13 +503,13 @@ def run_portfolio_scenarios(
 ) -> dict[str, Any]:
     """Reprices the portfolio under a grid of (spot_shift, vol_shift).
 
-    Cells execute through quantark.execution (PricingSession
+    Cells execute through quantheon_engine.execution (PricingSession
     run_scenario_plans); the shift math, exclusion/usability gates, and the
     per-cell failure-to-0.0 semantics match the legacy thread-pool path.
     """
-    from quantark.execution.contracts import PricingFailure
+    from quantheon_engine.execution.contracts import PricingFailure
 
-    from .quantark_execution import run_market_shift_grid
+    from .quantheon_engine_execution import run_market_shift_grid
 
     positions = [
         (_position_snapshot(pos), market_snapshot_for_position(pos, market))
@@ -548,7 +548,7 @@ def run_portfolio_scenarios(
             }
             for pos, base_market in positions
         ]
-        ensure_quantark_path()
+        ensure_engine_path()
         workers = _risk_worker_count(len(positions) * (1 + len(grid_cells)))
         outcomes = run_market_shift_grid(
             items, spot_shifts_pct, vol_shifts_abs, workers=workers

@@ -178,7 +178,7 @@ def test_scalar_option_families_preserve_explicit_lifecycle_dates(family, terms)
 
 # --- DeltaOne (Spot/Futures): persistence-only metadata is carried as _otc_ so
 # it survives in stored terms (for the equity_spot/futures_products side-tables)
-# but is popped before QuantArk construction. The QuantArk constructor surfaces
+# but is popped before Quantheon Engine construction. The Quantheon Engine constructor surfaces
 # are SpotInstrument{underlying, deltaone_type} and Futures{underlying, multiplier,
 # maturity, maturity_date, basis, basis_decay_rate, market_price}; instrument_code/
 # exchange/contract_multiplier (spot) and contract_code (futures) are NOT kwargs.
@@ -190,13 +190,13 @@ def test_spot_carries_persistence_metadata_as_otc():
     )
     assert result.ok is True, result.validation
     pk = result.product_kwargs
-    # QuantArk kwargs stay bare; persistence metadata is _otc_-prefixed.
+    # Quantheon Engine kwargs stay bare; persistence metadata is _otc_-prefixed.
     assert pk["deltaone_type"] == "ETF"
     assert pk["underlying"] == "510300.SH"
     assert pk["_otc_instrument_code"] == "510300.SH"
     assert pk["_otc_exchange"] == "SSE"
     assert pk["_otc_contract_multiplier"] == 1.0
-    assert "instrument_code" not in pk  # the bare kwarg QuantArk would reject
+    assert "instrument_code" not in pk  # the bare kwarg Quantheon Engine would reject
     assert "exchange" not in pk
 
 
@@ -221,7 +221,7 @@ def test_futures_carries_contract_code_as_otc_and_passes_basis():
 
 
 def test_deltaone_otc_metadata_does_not_block_validation():
-    # The _otc_ keys must be popped before QuantArk construction at validate time.
+    # The _otc_ keys must be popped before Quantheon Engine construction at validate time.
     result = build_product(
         "SpotInstrument",
         {"initial_price": 4.2, "underlying": "510300.SH", "deltaone_type": "ETF",
@@ -237,7 +237,7 @@ def test_deltaone_position_prices_with_otc_metadata_stripped():
     # With the _otc_ carry, _build_termsheet pops the metadata and construction
     # succeeds. build_product_for_position reads product_kwargs off a position-like
     # object when no ORM product is attached.
-    from app.services.quantark import build_product_for_position
+    from app.services.quantheon_engine import build_product_for_position
 
     class _Pos:
         product = None
@@ -739,7 +739,7 @@ def test_barrier_rebate_defaults_zero_and_honors_explicit():
 
 # --- Part (c): single + double sharkfin edge cases. The double-sharkfin inverted-
 # barrier rejection is the centerpiece: _build_double_sharkfin does not order-check
-# lower<upper, so QuantArk must reject a nonsensical lower>upper at validation. If
+# lower<upper, so Quantheon Engine must reject a nonsensical lower>upper at validation. If
 # that ever starts building ok, a nonsensical product is being accepted — STOP, do
 # not delete the test.
 def test_single_sharkfin_missing_barrier_reported():
@@ -772,7 +772,7 @@ def test_double_sharkfin_missing_barriers_reported():
 
 
 def test_double_sharkfin_inverted_barriers_are_rejected():
-    # _build_double_sharkfin does not order-check; QuantArk must catch lower>upper
+    # _build_double_sharkfin does not order-check; Quantheon Engine must catch lower>upper
     # so a nonsensical double sharkfin is rejected, not silently built.
     result = build_product(
         "DoubleSharkfinOption",

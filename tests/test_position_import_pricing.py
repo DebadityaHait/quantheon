@@ -42,7 +42,7 @@ from app.services.pricing_profiles import (
 )
 from app.services.quotes import latest_quote, record_quote
 from app.schemas import PricingEnvironmentSnapshot
-from app.services.quantark import QuantArkResult, _drop_past_observations, price_product
+from app.services.quantheon_engine import EngineResult, _drop_past_observations, price_product
 from app.services.domains import pricing_profiles as pricing_profiles_domain
 
 
@@ -630,7 +630,7 @@ def test_delta_one_pricer_requires_only_spot(tmp_path: Path, monkeypatch):
         assert market.volatility > 0.0
         assert product_kwargs["market_price"] == 4913.8
         assert engine_kwargs["use_market_price"] is True
-        return QuantArkResult(ok=True, data={"price": market.spot, "engine": engine_name})
+        return EngineResult(ok=True, data={"price": market.spot, "engine": engine_name})
 
     monkeypatch.setattr("app.services.position_pricer.price_product", fake_price_product)
 
@@ -675,7 +675,7 @@ def test_pricer_rejects_implausible_model_output(tmp_path: Path, monkeypatch):
     session.commit()
 
     def huge_price(*args, **kwargs):
-        return QuantArkResult(ok=True, data={"price": 1.573839927106165e253, "engine": "TestEngine"})
+        return EngineResult(ok=True, data={"price": 1.573839927106165e253, "engine": "TestEngine"})
 
     monkeypatch.setattr("app.services.position_pricer.price_product", huge_price)
 

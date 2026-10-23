@@ -70,7 +70,7 @@ def _draft_payload(**overrides) -> dict:
 
 
 def test_solve_rfq_tool(monkeypatch):
-    """solve_rfq dispatches to services.quantark.solve_rfq via the facade."""
+    """solve_rfq dispatches to services.quantheon_engine.solve_rfq via the facade."""
     fake = SimpleNamespace(ok=True, data={"price": 1.23}, error=None)
     monkeypatch.setattr("app.services.domains.rfq.solve_rfq", lambda draft: fake)
     result = solve_rfq_tool.invoke(_draft_payload())

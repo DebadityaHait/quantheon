@@ -19,14 +19,14 @@ def _mixed_risk(delta_proxy: float = 42.0) -> dict:
 
 
 def test_recommend_hedge_uses_shared_delta_proxy_for_mixed_currency():
-    from app.services.quantark import recommend_hedge
+    from app.services.quantheon_engine import recommend_hedge
 
     out = recommend_hedge(_mixed_risk(delta_proxy=42.0))
     assert out["target_delta_trade"] == -42.0  # from shared, no crash on totals=None
 
 
 def test_recommend_hedge_single_currency_still_works():
-    from app.services.quantark import recommend_hedge
+    from app.services.quantheon_engine import recommend_hedge
 
     # Single-currency: totals is populated and carries delta_proxy (merged shared).
     risk = {"totals": {"delta_proxy": 5.0}, "shared": {"delta_proxy": 5.0}}
@@ -35,7 +35,7 @@ def test_recommend_hedge_single_currency_still_works():
 
 
 def test_recommend_hedge_no_data_no_crash():
-    from app.services.quantark import recommend_hedge
+    from app.services.quantheon_engine import recommend_hedge
 
     out = recommend_hedge({"totals": None})
     assert out["target_delta_trade"] == 0.0

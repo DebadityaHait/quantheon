@@ -33,7 +33,7 @@ routing:
 ## Required inputs
 
 Use position terms, imported row fields, or explicit user text. Identify
-the QuantArk family, then call `get_product_reference_doc` with it for the
+the Quantheon Engine family, then call `get_product_reference_doc` with it for the
 resolved reference (definitions, conventions, required pricing inputs,
 diagnostics). Do not read raw files under `/skills/references/products/`.
 

@@ -1,6 +1,6 @@
 """Risk domain service.
 
-Facade over ``quantark.py`` (in-memory risk calc) and ``risk_engine.py``
+Facade over ``quantheon_engine.py`` (in-memory risk calc) and ``risk_engine.py``
 (persisted async risk runs).
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ from app.models import RiskRun
 from app.schemas import PortfolioPositionSpec, PricingEnvironmentSnapshot
 from app.services.audit import record_audit
 from app.services.domains import positions as positions_svc
-from app.services.quantark import calculate_portfolio_risk, recommend_hedge as _recommend_hedge
+from app.services.quantheon_engine import calculate_portfolio_risk, recommend_hedge as _recommend_hedge
 from app.services.batch_pricing import (
     execute_batch_pricing_task,
     queue_batch_pricing,

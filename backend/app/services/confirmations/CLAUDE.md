@@ -95,7 +95,7 @@ and the server re-validates).
   (three of them REQUIRED by that schema). The booking gate's sniffer
   (`booking._has_raw_termsheet_vocab`, synthesize-vs-validate-verbatim) used to key on
   `maturity_years|maturity_date|expiry_date|expiry` alone, so those terms took the
-  verbatim path and QuantArk rejected `initial_price`. It now also counts
+  verbatim path and Quantheon Engine rejected `initial_price`. It now also counts
   `initial_price` for families whose constructor rejects it (the same defect cost
   `book_position` the arena trader-rfq step 4, runs #143/#146) — but the service still
   runs `build_product` itself (the repo's single producer) before the gate, exactly as

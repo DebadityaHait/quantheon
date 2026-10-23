@@ -1,8 +1,8 @@
-"""Component B — Asian observation_records → QuantArk records at pricing time.
+"""Component B — Asian observation_records → Quantheon Engine records at pricing time.
 
 The booked schedule lives in product_kwargs.observation_records as
 {observation_date, weight, observed_price?}. At pricing time these become
-QuantArk-ready {observation_time, observed_price?, weight?} records, split
+Quantheon Engine-ready {observation_time, observed_price?, weight?} records, split
 past/future relative to the valuation date.
 """
 
@@ -10,7 +10,7 @@ from datetime import datetime
 
 import pytest
 
-from app.services.quantark import (
+from app.services.quantheon_engine import (
     PricingEnvironmentSnapshot,
     _asian_observation_records_for_pricing,
 )
@@ -52,7 +52,7 @@ def test_past_future_split_and_uncaptured_drop():
 
 
 def test_already_resolved_observation_time_records_are_sanitized_not_discarded():
-    # Callers (e.g. pricing-preview) may supply QuantArk-ready records keyed by
+    # Callers (e.g. pricing-preview) may supply Quantheon Engine-ready records keyed by
     # observation_time. They must NOT be discarded, and they get the SAME
     # past/future sanitization as booked-form records.
     records = [
@@ -92,7 +92,7 @@ def test_empty_or_non_list_returns_empty():
 # --- End-to-end: records drive position pricing through build_product_for_position ---
 
 from app.models import Position  # noqa: E402
-from app.services.quantark import (  # noqa: E402
+from app.services.quantheon_engine import (  # noqa: E402
     build_pricing_env,
     build_product_for_position,
 )
@@ -140,7 +140,7 @@ def test_records_drive_weighted_and_realized_resolve_observations():
 
 
 def test_empty_records_list_falls_back_to_num_observations():
-    # observation_records: [] must not reach QuantArk as an empty field; it falls
+    # observation_records: [] must not reach Quantheon Engine as an empty field; it falls
     # back to the num_observations path.
     snap = _market("2025-01-01")
     product = build_product_for_position(
@@ -189,7 +189,7 @@ def test_partial_uncaptured_past_falls_back_to_num_observations():
 
 def test_records_only_partial_uncaptured_preserves_booked_count():
     # Records-only kwargs (no num_observations). On partial-uncaptured fallback,
-    # the booked schedule LENGTH must be preserved, not QuantArk's default 12.
+    # the booked schedule LENGTH must be preserved, not Quantheon Engine's default 12.
     snap = _market("2025-01-01")
     records = [
         {"observation_date": "2024-06-01", "weight": None, "observed_price": 110.0},

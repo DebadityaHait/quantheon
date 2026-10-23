@@ -12,7 +12,7 @@ Part of [Quantheon](../../../../CLAUDE.md) — the root guide carries the repo-w
 
 Per-underlying `r`/`q`/`vol` **term-structure curves** feed a *materialize-then-price*
 step: curves are interpolated at each open trade's maturity into a normal **flat**
-`PricingParameterProfile`, so the pricing path (QuantArk, `risk_engine`,
+`PricingParameterProfile`, so the pricing path (Quantheon Engine, `risk_engine`,
 `build_assumptions_set`) is **completely unchanged** — it still consumes scalars.
 
 **Storage.** Three nullable JSON columns on `instruments` (`Instrument` /
@@ -28,7 +28,7 @@ flat extrapolation past the ends, single point → constant, empty/None → None
 **Generate** lives in the domain facade `services/domains/pricing_profiles.py`:
 `generate_curve_param_rows` (read-only compute) walks `open_otc_positions`, skips delta-one
 (`position_requires_pricing_params`), derives each trade's **tenor in years** via
-`_tenor_years_for_position` — a numeric year-fraction `maturity` (the QuantArk `T` the engine
+`_tenor_years_for_position` — a numeric year-fraction `maturity` (the Quantheon Engine `T` the engine
 prices with) is used directly, else an absolute maturity date resolved from
 `compatibility_terms_for_position(...)["product_kwargs"]` under a priority key list
 (`maturity_date` / `expiry_date` / `expiry` / `exercise_date` / `settlement_date`) is turned

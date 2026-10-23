@@ -340,7 +340,7 @@ def product_spec_from_position_payload(payload: dict[str, Any]) -> ProductSpec:
     kwargs = dict(payload.get("product_kwargs") or {})
     components = list(payload.get("components") or kwargs.pop("components", []) or [])
     underlying = str(payload.get("underlying") or kwargs.get("underlying") or "UNKNOWN")
-    family = product_family_for_quantark_class(product_type, components=components)
+    family = product_family_for_engine_class(product_type, components=components)
     return ProductSpec(
         asset_class=str(payload.get("asset_class") or "equity"),
         product_family=family,
@@ -372,7 +372,7 @@ def product_spec_from_executable_terms(terms: Any) -> ProductSpec:
     underlying = str(payload.get("underlying") or kwargs.get("underlying") or "UNKNOWN")
     return ProductSpec(
         asset_class=str(payload.get("asset_class") or "equity"),
-        product_family=product_family_for_quantark_class(
+        product_family=product_family_for_engine_class(
             product_type,
             components=components,
         ),
@@ -412,7 +412,7 @@ def backfill_position_products(session: Session, *, limit: int | None = None) ->
     return len(positions)
 
 
-def product_family_for_quantark_class(
+def product_family_for_engine_class(
     quantark_class: str | None, *, components: list[dict[str, Any]] | None = None
 ) -> str:
     if components:
@@ -437,6 +437,10 @@ def product_family_for_quantark_class(
     if product_type in _OPTION_CLASSES:
         return "option"
     return "option"
+
+
+# Compatibility for integrations importing the previous helper name.
+product_family_for_quantark_class = product_family_for_engine_class
 
 
 def _write_family_rows(session: Session, product: Product, spec: ProductSpec) -> None:
@@ -917,7 +921,7 @@ def _write_spot_terms(session: Session, product: Product, terms: dict[str, Any])
             product_id=product.id,
             deltaone_type=_str_or_none(_first_present(terms, "deltaone_type")) or "STOCK",
             # Synthesized DeltaOne bookings carry persistence metadata as _otc_ keys
-            # (not QuantArk constructor kwargs); read either form.
+            # (not Quantheon Engine constructor kwargs); read either form.
             instrument_code=_str_or_none(
                 _first_present(terms, "instrument_code", "_otc_instrument_code")
             )
@@ -995,7 +999,7 @@ def _component_product_id(session: Session, component: dict[str, Any]) -> int:
             asset_class=str(nested.get("asset_class") or "equity"),
             product_family=str(
                 nested.get("product_family")
-                or product_family_for_quantark_class(
+                or product_family_for_engine_class(
                     nested.get("quantark_class"), components=nested_components
                 )
             ),

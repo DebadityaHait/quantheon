@@ -1,0 +1,337 @@
+# Modified by Quantheon contributors: renamed package imports.
+"""Adapter registry with string-keyed MRO resolution (spec section 6.2).
+
+Engines are matched by walking ``type(engine).__mro__`` against registered
+``"module.qualname"`` strings, so this module never imports asset, product,
+or engine code. Registries freeze for the lifetime of a session; duplicate
+or post-freeze registration is a validation error.
+
+Resolution order (spec section 6.2): exact engine class first (MRO position
+0), then the nearest registered base class in MRO order. Python's MRO is a
+total order, so "nearest" is deterministic; ambiguity is prevented at
+registration time by rejecting duplicate paths. Structural capability
+detection (resolution step 2) becomes meaningful in Phase 1 when the first
+specialized adapters land; Phase 0 has none, so it is a documented no-op.
+"""
+from quantheon_engine.execution.errors import CapabilityError
+from quantheon_engine.util.exceptions import ValidationError
+
+__all__ = ["AdapterRegistry", "build_default_registry"]
+
+
+class AdapterRegistry:
+    def __init__(self):
+        self._factories: dict = {}
+        self._frozen = False
+
+    def register(self, engine_class_path: str, adapter_factory,
+                 exact: bool = False) -> None:
+        """``exact=True`` matches ONLY the class itself, never subclasses
+        via MRO (code-gate finding 2026-07-16: adapters that reconstruct an
+        engine from a fixed constructor signature would silently discard
+        subclass state; unknown subclasses must fall through to a base
+        registration instead)."""
+        if self._frozen:
+            raise ValidationError(
+                "AdapterRegistry is frozen; register adapters before "
+                "session construction"
+            )
+        if engine_class_path in self._factories:
+            raise ValidationError(
+                f"duplicate adapter registration for {engine_class_path}"
+            )
+        self._factories[engine_class_path] = (adapter_factory, exact)
+
+    def freeze(self) -> None:
+        self._frozen = True
+
+    def registered_paths(self) -> tuple:
+        return tuple(self._factories)
+
+    def resolve(self, engine):
+        return self.resolve_class(type(engine))
+
+    def resolve_class(self, engine_class):
+        for cls in engine_class.__mro__:
+            key = f"{cls.__module__}.{cls.__qualname__}"
+            entry = self._factories.get(key)
+            if entry is not None:
+                factory, exact = entry
+                if exact and cls is not engine_class:
+                    continue  # exact registrations never match subclasses
+                return factory()
+        raise CapabilityError(
+            f"no execution adapter registered for engine type "
+            f"{engine_class.__module__}.{engine_class.__qualname__}"
+        )
+
+
+_DEFAULT_REGISTRATIONS = (
+    ("quantheon_engine.asset.equity.engine.base_engine.BaseEngine", "product_env"),
+    # SABRMCEngine does not inherit the equity BaseEngine (spec section A.4
+    # abstraction gap) but uses the standard price(product, env) shape.
+    ("quantheon_engine.asset.equity.engine.mc.sabr_mc_engine.SABRMCEngine", "product_env"),
+    ("quantheon_engine.asset.fx.engine.base_fx_engine.BaseFxEngine", "product_env"),
+    (
+        "quantheon_engine.asset.credit.engine.base_credit_engine.BaseCreditEngine",
+        "product_env",
+    ),
+    (
+        "quantheon_engine.asset.bond.engine.pde.convertible.jump_diffusion_engine."
+        "ConvertibleBondJumpDiffusionEngine",
+        "env_bound",
+    ),
+    (
+        "quantheon_engine.asset.bond.engine.pde.convertible.tf_engine."
+        "ConvertibleBondTFEngine",
+        "env_bound",
+    ),
+    (
+        "quantheon_engine.asset.bond.engine.convertible.convertible_bond_engine."
+        "ConvertibleBondEngine",
+        "env_bound",
+    ),
+)
+
+
+def build_default_registry() -> AdapterRegistry:
+    """Fresh registry with the serial compatibility adapter registered for
+    every known engine-family root. Callers freeze it at session construction."""
+    from quantheon_engine.execution.legacy_adapter import LegacyPriceAdapter
+
+    registry = AdapterRegistry()
+    for path, shape in _DEFAULT_REGISTRATIONS:
+        registry.register(
+            path,
+            (lambda s: (lambda: LegacyPriceAdapter(call_shape=s)))(shape),
+        )
+    # Specialized exact-class adapters (lazy factory import at resolve time —
+    # this module keeps zero static asset-code dependencies).
+    # exact=True on both (code-gate finding 2026-07-16): these adapters
+    # clone the engine around a cached surface with a fixed constructor
+    # signature; subclasses (e.g. the frozen quant-mini-project
+    # SurfaceAwareLVDCNEngine) keep the plain legacy adapter and their
+    # direct-path hooks (spec section 17.1).
+    registry.register(
+        "quantheon_engine.asset.equity.engine.mc.dcn_vol_mc_engines.LocalVolDCNMCEngine",
+        _dcn_mc_adapter, exact=True,
+    )
+    registry.register(
+        "quantheon_engine.asset.equity.engine.pde.dcn_vol_pde_solvers.LocalVolDCNPDEEngine",
+        _dcn_pde_adapter, exact=True,
+    )
+    # Phase 2: fixed-batch capability for the plain GBM DCN MC engine.
+    # exact=True: the batch adapters reconstruct engines from the exact
+    # constructor signature, so unknown subclasses (with extra state) must
+    # fall through the MRO to the legacy adapter, never be cloned lossily.
+    registry.register(
+        "quantheon_engine.asset.equity.engine.mc.dcn_mc_engine.DCNMCEngine",
+        _dcn_batch_mc_adapter, exact=True,
+    )
+    # Phase 3: Heston DCN fixed-batch adapters. exact=True (fixed
+    # constructor signatures); unknown stateful subclasses fall through the
+    # MRO to the legacy adapter (DCNMCEngine's exact entry never matches a
+    # subclass either).
+    registry.register(
+        "quantheon_engine.asset.equity.engine.mc.dcn_vol_mc_engines.HestonDCNMCEngine",
+        _dcn_heston_batch_adapter, exact=True,
+    )
+    registry.register(
+        "quantheon_engine.asset.equity.engine.mc.dcn_vol_mc_engines.QEDCNMCEngine",
+        _dcn_qe_batch_adapter, exact=True,
+    )
+    registry.register(
+        "quantheon_engine.asset.equity.engine.mc.dcn_vol_mc_engines."
+        "CoupledCoarseHestonDCNMCEngine",
+        _dcn_coupled_batch_adapter, exact=True,
+    )
+    # Phase 3: adaptive RQMC compatibility plans for the 12 VERIFIED
+    # concrete autocallable engines. exact=True (code-gate finding
+    # 2026-07-16): the adapter drives the session-spec seam rather than
+    # engine.price(), so an unknown subclass that overrides price() (or
+    # any preamble behavior) must fall through the MRO to the legacy
+    # adapter, which calls the complete public price path.
+    for autocall in (
+        "quantheon_engine.asset.equity.engine.mc.snowball_mc_engine.SnowballMCEngine",
+        "quantheon_engine.asset.equity.engine.mc.snowball_vol_mc_engines."
+        "LocalVolSnowballMCEngine",
+        "quantheon_engine.asset.equity.engine.mc.snowball_vol_mc_engines."
+        "HestonSnowballMCEngine",
+        "quantheon_engine.asset.equity.engine.mc.snowball_vol_mc_engines."
+        "QESnowballMCEngine",
+        "quantheon_engine.asset.equity.engine.mc.snowball_vol_mc_engines."
+        "HestonSLVSnowballMCEngine",
+        "quantheon_engine.asset.equity.engine.mc.snowball_vol_mc_engines."
+        "HestonSLVQESnowballMCEngine",
+        "quantheon_engine.asset.equity.engine.mc.phoenix_mc_engine.PhoenixMCEngine",
+        "quantheon_engine.asset.equity.engine.mc.phoenix_vol_mc_engines."
+        "LocalVolPhoenixMCEngine",
+        "quantheon_engine.asset.equity.engine.mc.phoenix_vol_mc_engines."
+        "HestonPhoenixMCEngine",
+        "quantheon_engine.asset.equity.engine.mc.phoenix_vol_mc_engines."
+        "QEPhoenixMCEngine",
+        "quantheon_engine.asset.equity.engine.mc.phoenix_vol_mc_engines."
+        "HestonSLVPhoenixMCEngine",
+        "quantheon_engine.asset.equity.engine.mc.phoenix_vol_mc_engines."
+        "HestonSLVQEPhoenixMCEngine",
+    ):
+        registry.register(autocall, _autocallable_adaptive_adapter, exact=True)
+    # Phase 4: prepared PDE session adapters. exact=True throughout: every
+    # adapter clones the engine (fixed constructor signatures) and/or drives
+    # the _session_outputs seam instead of price(), so unknown subclasses
+    # fall through the MRO to the legacy adapter.
+    for pde_1d in (
+        "quantheon_engine.asset.equity.engine.pde.european_pde_solver.EuropeanPDESolver",
+        "quantheon_engine.asset.equity.engine.pde.american_pde_solver.AmericanPDESolver",
+        "quantheon_engine.asset.equity.engine.pde.barrier_pde_solver.BarrierPDESolver",
+        "quantheon_engine.asset.equity.engine.pde.double_barrier_pde_solver."
+        "DoubleBarrierPDESolver",
+        "quantheon_engine.asset.equity.engine.pde.one_touch_pde_solver.OneTouchPDESolver",
+        "quantheon_engine.asset.equity.engine.pde.double_one_touch_pde_solver."
+        "DoubleOneTouchPDESolver",
+    ):
+        registry.register(pde_1d, _equity_pde_1d_adapter, exact=True)
+    for pde_autocall in (
+        "quantheon_engine.asset.equity.engine.pde.snowball_pde_solver.SnowballPDESolver",
+        "quantheon_engine.asset.equity.engine.pde.ko_reset_snowball_pde_solver."
+        "KOResetSnowballPDESolver",
+        "quantheon_engine.asset.equity.engine.pde.phoenix_pde_solver.PhoenixPDESolver",
+    ):
+        registry.register(pde_autocall, _equity_pde_autocall_adapter, exact=True)
+    for pde_lv in (
+        "quantheon_engine.asset.equity.engine.pde.local_vol_pde_solver.LocalVolPDESolver",
+        "quantheon_engine.asset.equity.engine.pde.barrier_vol_pde_solvers."
+        "LocalVolBarrierPDESolver",
+    ):
+        registry.register(pde_lv, _equity_pde_lv_adapter, exact=True)
+    for pde_lv_autocall in (
+        "quantheon_engine.asset.equity.engine.pde.snowball_vol_pde_solvers."
+        "LocalVolSnowballPDESolver",
+        "quantheon_engine.asset.equity.engine.pde.phoenix_vol_pde_solvers."
+        "LocalVolPhoenixPDESolver",
+    ):
+        registry.register(
+            pde_lv_autocall, _equity_pde_lv_autocall_adapter, exact=True
+        )
+    for pde_heston_autocall in (
+        "quantheon_engine.asset.equity.engine.pde.snowball_vol_pde_solvers."
+        "HestonSnowballPDESolver",
+        "quantheon_engine.asset.equity.engine.pde.snowball_vol_pde_solvers."
+        "HestonSLVSnowballPDESolver",
+        "quantheon_engine.asset.equity.engine.pde.phoenix_vol_pde_solvers."
+        "HestonPhoenixPDESolver",
+        "quantheon_engine.asset.equity.engine.pde.phoenix_vol_pde_solvers."
+        "HestonSLVPhoenixPDESolver",
+    ):
+        registry.register(
+            pde_heston_autocall, _equity_pde_heston_autocall_adapter, exact=True
+        )
+    registry.register(
+        "quantheon_engine.asset.fx.engine.pde.local_vol_pde_solver.FxLocalVolPDESolver",
+        _fx_pde_lv_adapter, exact=True,
+    )
+    return registry
+
+
+def _dcn_mc_adapter():
+    from quantheon_engine.asset.equity.engine.mc.dcn_execution_adapters import (
+        DCNLocalVolMCAdapter,
+    )
+
+    return DCNLocalVolMCAdapter()
+
+
+def _dcn_pde_adapter():
+    from quantheon_engine.asset.equity.engine.mc.dcn_execution_adapters import (
+        DCNLocalVolPDEAdapter,
+    )
+
+    return DCNLocalVolPDEAdapter()
+
+
+def _dcn_batch_mc_adapter():
+    from quantheon_engine.asset.equity.engine.mc.dcn_execution_adapters import (
+        DCNBatchMCAdapter,
+    )
+
+    return DCNBatchMCAdapter()
+
+
+def _dcn_heston_batch_adapter():
+    from quantheon_engine.asset.equity.engine.mc.dcn_execution_adapters import (
+        DCNHestonBatchMCAdapter,
+    )
+
+    return DCNHestonBatchMCAdapter()
+
+
+def _dcn_qe_batch_adapter():
+    from quantheon_engine.asset.equity.engine.mc.dcn_execution_adapters import (
+        DCNQEBatchMCAdapter,
+    )
+
+    return DCNQEBatchMCAdapter()
+
+
+def _dcn_coupled_batch_adapter():
+    from quantheon_engine.asset.equity.engine.mc.dcn_execution_adapters import (
+        DCNCoupledCoarseHestonBatchMCAdapter,
+    )
+
+    return DCNCoupledCoarseHestonBatchMCAdapter()
+
+
+def _autocallable_adaptive_adapter():
+    from quantheon_engine.asset.equity.engine.mc.autocallable_execution_adapters import (
+        AutocallableAdaptiveMCAdapter,
+    )
+
+    return AutocallableAdaptiveMCAdapter()
+
+
+def _equity_pde_1d_adapter():
+    from quantheon_engine.asset.equity.engine.pde.pde_execution_adapters import (
+        EquityPDE1DSessionAdapter,
+    )
+
+    return EquityPDE1DSessionAdapter()
+
+
+def _equity_pde_autocall_adapter():
+    from quantheon_engine.asset.equity.engine.pde.pde_execution_adapters import (
+        EquityPDEAutocallableSessionAdapter,
+    )
+
+    return EquityPDEAutocallableSessionAdapter()
+
+
+def _equity_pde_lv_adapter():
+    from quantheon_engine.asset.equity.engine.pde.pde_execution_adapters import (
+        EquityLVPDESessionAdapter,
+    )
+
+    return EquityLVPDESessionAdapter()
+
+
+def _equity_pde_lv_autocall_adapter():
+    from quantheon_engine.asset.equity.engine.pde.pde_execution_adapters import (
+        EquityLVAutocallableSessionAdapter,
+    )
+
+    return EquityLVAutocallableSessionAdapter()
+
+
+def _equity_pde_heston_autocall_adapter():
+    from quantheon_engine.asset.equity.engine.pde.pde_execution_adapters import (
+        Heston2DAutocallableSessionAdapter,
+    )
+
+    return Heston2DAutocallableSessionAdapter()
+
+
+def _fx_pde_lv_adapter():
+    from quantheon_engine.asset.fx.engine.pde.fx_pde_execution_adapters import (
+        FxLVPDESessionAdapter,
+    )
+
+    return FxLVPDESessionAdapter()

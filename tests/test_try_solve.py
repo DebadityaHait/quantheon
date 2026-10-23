@@ -408,7 +408,7 @@ def test_export_try_solve_workbook_writes_status_and_results(tmp_path: Path):
     assert values["Solve Status"] == "solved"
     assert values["Solved Value"] == 98.5
     assert values["Model Price"] == 8.0
-    assert values["QuantArk Product"] == "EuropeanVanillaOption"
+    assert values["Quantheon Engine Product"] == "EuropeanVanillaOption"
 
 
 def test_export_try_solve_workbook_sanitizes_invalid_sheet_title_chars(
@@ -1230,7 +1230,7 @@ def test_double_touch_flat_contract_sets_touch_type_from_product_key():
     one_touch = _flat("double_one_touch")
     assert no_touch["touch_type"] == "DOUBLE_NO_TOUCH"
     assert one_touch["touch_type"] == "DOUBLE_ONE_TOUCH"
-    # flat-contract input keys (build_product INPUT names), not QuantArk kwargs
+    # flat-contract input keys (build_product INPUT names), not Quantheon Engine kwargs
     for flat in (no_touch, one_touch):
         assert {"upper_barrier", "lower_barrier", "cash_payoff",
                 "initial_price", "maturity_years"} <= set(flat)
@@ -1287,7 +1287,7 @@ def test_snowball_row_frequency_alias_normalizes_to_canonical():
 
 def test_product_kwargs_for_row_legacy_producer_is_removed():
     import app.services.try_solve as ts
-    # The legacy per-row QuantArk-kwargs producer is fully retired; every
+    # The legacy per-row Quantheon Engine-kwargs producer is fully retired; every
     # supported product key now builds via build_product.
     assert not hasattr(ts, "_product_kwargs_for_row")
     assert ts._MIGRATED_PRODUCT_KEYS == ts._SUPPORTED_SOLVE_PRODUCT_KEYS

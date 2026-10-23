@@ -1,8 +1,8 @@
-"""Bridge: DB positions + per-position market snapshots -> QuantArk EquityPortfolio.
+"""Bridge: DB positions + per-position market snapshots -> Quantheon Engine EquityPortfolio.
 
 The single new abstraction for the scenario-test feature. Pure: it takes already
 resolved per-position market snapshots (from risk_engine._pricing_position_context)
-and assembles a QuantArk EquityPortfolio. No DB / profile logic lives here.
+and assembles a Quantheon Engine EquityPortfolio. No DB / profile logic lives here.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.schemas import PricingEnvironmentSnapshot
-from app.services import quantark
+from app.services import quantheon_engine
 
 
 def build_equity_portfolio(
@@ -28,8 +28,8 @@ def build_equity_portfolio(
     Pricing environments are keyed by underlying (one per underlying — the correct
     stress baseline); the first position seen for an underlying seeds its env.
     """
-    quantark.ensure_quantark_path()
-    from quantark.portfolio import EquityPortfolio
+    quantheon_engine.ensure_engine_path()
+    from quantheon_engine.portfolio import EquityPortfolio
     from app.services.engine_configs import get_engine_config, position_with_engine, resolve_pricing_engine
 
     excluded: list[dict] = []
@@ -37,7 +37,7 @@ def build_equity_portfolio(
     engine_config = get_engine_config(session, engine_config_id) if session is not None else None
 
     for position in positions:
-        reason = quantark.risk_pricing_exclusion(position)
+        reason = quantheon_engine.risk_pricing_exclusion(position)
         if reason:
             excluded.append({"position_id": position.id, "reason": reason})
             continue
@@ -63,7 +63,7 @@ def build_equity_portfolio(
                 # the shared env and later positions for that underlying are valued
                 # against it. Bounded baseline inconsistency acceptable for v1's
                 # one-env-per-underlying model.
-                portfolio.pricing_environments[underlying] = quantark.build_pricing_env(market)
+                portfolio.pricing_environments[underlying] = quantheon_engine.build_pricing_env(market)
             resolved_engine = (
                 SimpleNamespace(
                     engine_name=position.engine_name,
@@ -73,8 +73,8 @@ def build_equity_portfolio(
                 else resolve_pricing_engine(position, engine_config)
             )
             engine_position = position_with_engine(position, resolved_engine)
-            product = quantark.build_product_for_position(engine_position, market)
-            engine = quantark.build_engine_for_position(engine_position, market)
+            product = quantheon_engine.build_product_for_position(engine_position, market)
+            engine = quantheon_engine.build_engine_for_position(engine_position, market)
             created = portfolio.add_position(
                 product=product,
                 quantity=float(position.quantity),
@@ -83,7 +83,7 @@ def build_equity_portfolio(
                 engine=engine,
             )
             # Re-key under the DB position id so position_results correlate with
-            # resolved_position_ids / the requested scope (QuantArk otherwise keys by a
+            # resolved_position_ids / the requested scope (Quantheon Engine otherwise keys by a
             # generated UUID). _create_stressed_portfolio deepcopies positions, so the
             # DB-id key flows through to the engine's per-position result rows.
             portfolio.positions.pop(created.position_id, None)

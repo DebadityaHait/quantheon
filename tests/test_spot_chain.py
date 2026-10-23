@@ -18,7 +18,7 @@ from app.models import (
     Position,
 )
 from app.schemas import PricingEnvironmentSnapshot
-from app.services.quantark import market_snapshot_for_position
+from app.services.quantheon_engine import market_snapshot_for_position
 from app.services.quotes import record_quote
 
 

@@ -77,7 +77,7 @@ function parseErrors(quotePayload: Record<string, unknown>): string[] {
   return validation?.errors ?? [];
 }
 
-function parseQuantarkError(quotePayload: Record<string, unknown>): string | null {
+function parseEngineError(quotePayload: Record<string, unknown>): string | null {
   const err = quotePayload.quantark_error ?? quotePayload.error;
   if (!err) return null;
   return String(err);
@@ -341,8 +341,8 @@ export function RfqQuoteForm({ rfq, onQuote }: Props) {
     () => parseErrors(rfq.quote_payload ?? {}),
     [rfq.quote_payload],
   );
-  const quantarkError = useMemo(
-    () => parseQuantarkError(rfq.quote_payload ?? {}),
+  const engineError = useMemo(
+    () => parseEngineError(rfq.quote_payload ?? {}),
     [rfq.quote_payload],
   );
 
@@ -466,10 +466,10 @@ export function RfqQuoteForm({ rfq, onQuote }: Props) {
 
   return (
     <form className="wl-rfq-quote-form" onSubmit={handleSubmit}>
-      {(errors.length > 0 || quantarkError) && (
+      {(errors.length > 0 || engineError) && (
         <div className="wl-rfq-quote-form__errors">
-          {quantarkError && (
-            <div className="wl-rfq-quote-form__error-item">{quantarkError}</div>
+          {engineError && (
+            <div className="wl-rfq-quote-form__error-item">{engineError}</div>
           )}
           {errors.map((err, i) => (
             <div key={i} className="wl-rfq-quote-form__error-item">{err}</div>

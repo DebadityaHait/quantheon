@@ -161,7 +161,7 @@ def _tenor_years_for_position(
     """Time-to-maturity in years, matching the tenor the pricing engine uses.
 
     Positions carry maturity either as a numeric year-fraction (``"maturity": 1.0``,
-    the QuantArk ``T`` that the engine prices with directly) or as an absolute date
+    the Quantheon Engine ``T`` that the engine prices with directly) or as an absolute date
     (``exercise_date`` / ``maturity_date`` / …). Use the year-fraction directly, else
     ACT/365 from valuation to the resolved date. Clamp matured/negative to the front.
     """

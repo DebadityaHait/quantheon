@@ -32,7 +32,7 @@ NUDGE_TEXT = (
     f"{NUDGE_MARKER} Your answer states whether a product's terms are "
     "complete or lists missing terms, but you did not verify against the "
     "desk's contracts. Before finalizing: call `check_term_completeness` "
-    "with the QuantArk class and the terms you were given (and "
+    "with the Quantheon Engine class and the terms you were given (and "
     "`get_product_reference_doc` if you need the family's semantics). "
     "If you do not hold these tools, delegate the check to the appropriate "
     "persona via `task`. Specify representation: raw_build_inputs for collected "

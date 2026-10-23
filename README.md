@@ -20,7 +20,7 @@ From the first question to the next decision, keep the desk connected.
 
 Quantheon brings conversational agents, deterministic quantitative tools and desk operations into a single interface. Build a trade, understand its contribution to the book, explore a hedge and follow the work through its lifecycle—without losing the context behind a decision.
 
-> **A clear division of responsibility:** agents orchestrate the work; QuantArk performs the pricing and risk calculations. Consequential actions have review and approval workflows, and write-class actions are recorded in an audit trail.
+> **A clear division of responsibility:** agents orchestrate the work; the bundled deterministic pricing engine performs pricing and risk calculations. Consequential actions have review and approval workflows, and write-class actions are recorded in an audit trail.
 
 ## The workspace
 
@@ -48,7 +48,7 @@ Enter product terms while viewing the associated payoff profile. The booking wor
 
 ![Quantheon booking workspace with option payoff chart](docs/screenshots/quantheon-booking.png)
 
-*Figures in these screenshots are illustrative; the displayed valuations, Greeks and backtest series were seeded rather than calculated by QuantArk.*
+*Figures in these screenshots are illustrative; the displayed valuations, Greeks and backtest series were seeded rather than calculated by the pricing engine.*
 
 ## Everything the desk needs, connected
 
@@ -114,12 +114,14 @@ Open **[localhost:5173](http://localhost:5173)**. The API is available on port 8
 ```text
 React workspace ── REST / streaming ── FastAPI + agent orchestration
                                             │
-                                  QuantArk + desk services
+                              Bundled pricing engine + desk services
                                             │
                                   SQLAlchemy / SQLite
 ```
 
-The React and Vite frontend communicates with FastAPI over HTTP and streaming responses. LangGraph-based agents coordinate desk tools, QuantArk handles quantitative calculations, and SQLAlchemy and Alembic manage persistence and schema upgrades. An optional Feishu/Lark gateway provides a messaging interface to the desk.
+The React and Vite frontend communicates with FastAPI over HTTP and streaming responses. LangGraph-based agents coordinate desk tools, the bundled pricing engine handles quantitative calculations, and SQLAlchemy and Alembic manage persistence and schema upgrades. An optional Feishu/Lark gateway provides a messaging interface to the desk.
+
+Quantheon Engine is included in `backend/quantheon_engine` and does not require a separate package installation. It incorporates Apache-2.0 licensed code; its copyright, license and notice are included alongside the source. Existing database, API and configuration field names are retained for compatibility.
 
 ## Development
 
@@ -133,7 +135,7 @@ npm test
 npx tsc --noEmit
 ```
 
-See [CLAUDE.md](CLAUDE.md) and [frontend/CLAUDE.md](frontend/CLAUDE.md) for development conventions and operational safeguards. Historical evaluation workflows and evidence are documented in [`docs/arena/`](docs/arena/).
+See [CLAUDE.md](CLAUDE.md) and [frontend/CLAUDE.md](frontend/CLAUDE.md) for development conventions and operational safeguards. The [workflow guide](backend/app/golden_workflows/CLAUDE.md) covers the desk's evaluation manifests and fixtures.
 
 ## License
 

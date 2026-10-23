@@ -8,7 +8,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.schemas import PricingEnvironmentSnapshot
-from app.services.quantark import (
+from app.services.quantheon_engine import (
     _source_currency_for_position,
     market_snapshot_for_position,
 )

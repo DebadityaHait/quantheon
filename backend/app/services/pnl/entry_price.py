@@ -1,7 +1,7 @@
 """Inception-P&L basis accounting.
 
 ``pnl = (price - entry_price) * quantity`` is already computed inside
-QuantArk, but ``entry_price`` defaults to ``0.0``, which silently turns
+Quantheon Engine, but ``entry_price`` defaults to ``0.0``, which silently turns
 inception P&L into market value. Rather than report that number, this module
 excludes basis-less positions from the total and counts them, so a report can
 say "inception P&L over 9 of 13 positions" instead of quoting a figure that

@@ -505,8 +505,8 @@ _MIN_MATURITY_YEARS = 1.0 / 365.0
 # Fallback maturity when a leg carries no parseable expiry (near-month ≈ 1 qtr).
 _DEFAULT_MATURITY_YEARS = 0.25
 
-# QuantArk class + product family per hedge instrument type.
-_QUANTARK_CLASS = {
+# Quantheon Engine class + product family per hedge instrument type.
+_ENGINE_CLASS = {
     "future": "Futures",
     "spot": "SpotInstrument",
     "option": "EuropeanVanillaOption",
@@ -531,7 +531,7 @@ def _maturity_years(leg: dict[str, Any], *, default: float) -> float:
 
     ``(expiry - today).days / 365`` gives a calendar-day year-fraction; the
     one-day floor keeps an already-expired or same-day contract bookable with a
-    strictly positive maturity (QuantArk rejects maturity <= 0). When the leg
+    strictly positive maturity (Quantheon Engine rejects maturity <= 0). When the leg
     carries no parseable ``expiry`` the ``default`` is used so the position still
     persists without inventing an economics-sensitive value.
     """
@@ -546,22 +546,22 @@ def _maturity_years(leg: dict[str, Any], *, default: float) -> float:
 
 
 def _leg_terms(leg: dict[str, Any], spot: float) -> dict[str, Any]:
-    """Return bookable QuantArk ``terms`` for the leg.
+    """Return bookable Quantheon Engine ``terms`` for the leg.
 
     DeltaOne (future/spot) legs are SYNTHESIZED inside the booking gate
     (prebuilt=False), so they return *raw desk terms*: the builder requires
     ``initial_price`` (S0), threads ``underlying`` from the spec top-level, and
     carries ``contract_code``/``instrument_code``/``exchange`` as ``_otc_``
-    persistence-only metadata (the bare keys are absent from the final QuantArk
+    persistence-only metadata (the bare keys are absent from the final Quantheon Engine
     kwargs). ``maturity_years`` is derived from the leg ``expiry`` when present
     (else a near-month 0.25-yr fallback for futures).
 
     Option legs take the validate-and-wrap (prebuilt=True) path in the gate,
-    which feeds ``terms`` straight to QuantArk's validator — so raw desk fields
+    which feeds ``terms`` straight to Quantheon Engine's validator — so raw desk fields
     like ``expiry``/``initial_price`` would be rejected. We instead SYNTHESIZE a
     complete vanilla termsheet here via ``build_product`` and return its
     ``product_kwargs`` (``{contract_multiplier, maturity, strike, option_type}``
-    — the multiplier is a NATIVE QuantArk kwarg, not ``_otc_``; ``initial_price``
+    — the multiplier is a NATIVE Quantheon Engine kwarg, not ``_otc_``; ``initial_price``
     is consumed only as the validation spot and is correctly absent). The gate's
     prebuilt revalidation of these kwargs then passes.
     """
@@ -811,7 +811,7 @@ def book_hedge(
         spec = ProductBookingSpec(
             asset_class="equity",
             product_family=_PRODUCT_FAMILY[itype],
-            quantark_class=_QUANTARK_CLASS[itype],
+            quantark_class=_ENGINE_CLASS[itype],
             underlying=booked_underlying,
             currency="CNY",
             terms=_leg_terms(leg, spot),

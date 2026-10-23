@@ -41,7 +41,7 @@ def test_snowball_flat_terms_with_legacy_barrier_config_synthesize(monkeypatch):
         error = None
 
     monkeypatch.setattr(
-        "app.services.domains.product_builders.validate_quantark_build",
+        "app.services.domains.product_builders.validate_engine_build",
         lambda *args, **kwargs: _Validation(),
     )
 

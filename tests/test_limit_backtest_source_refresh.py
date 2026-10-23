@@ -444,7 +444,7 @@ def test_backtest_prep_failure_marks_market_evidence_incomplete(monkeypatch) -> 
 
 
 def test_backtest_engine_failure_excludes_its_position_scope(monkeypatch) -> None:
-    from quantark.backtest import otc
+    from quantheon_engine.backtest import otc
 
     from app.services.domains import backtest as backtest_service
 

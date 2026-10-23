@@ -70,7 +70,7 @@ def _seed_open_option(
         source_trade_id=source_trade_id,
         status="open",
         position_kind="otc",
-        engine_name="quantark.vanilla",
+        engine_name="quantheon_engine.vanilla",
         engine_kwargs={},
         source_payload={},
         mapping_status="supported",
@@ -118,7 +118,7 @@ def test_generate_curve_rows_resolves_exercise_date_maturity(session: Session) -
         product_kwargs={"exercise_date": "2026-07-02", "settlement_date": "2026-07-02",
                         "option_type": "CALL", "strike": 4931.386},
         quantity=1.0, source_trade_id="EX-1", status="open", position_kind="otc",
-        engine_name="quantark.vanilla", engine_kwargs={}, source_payload={},
+        engine_name="quantheon_engine.vanilla", engine_kwargs={}, source_payload={},
         mapping_status="supported",
     )
     session.add(pos)
@@ -138,7 +138,7 @@ def test_generate_curve_rows_resolves_exercise_date_maturity(session: Session) -
 
 def test_generate_curve_rows_resolves_numeric_maturity_year_fraction(session: Session) -> None:
     """Positions can carry maturity as a numeric year-fraction ("maturity": 0.5,
-    the QuantArk T) instead of a date — use it directly as the tenor (regression:
+    the Quantheon Engine T) instead of a date — use it directly as the tenor (regression:
     live book's US-stock trades store maturity this way, not as a date)."""
     portfolio = session.query(Portfolio).first() or Portfolio(name="Test")
     if portfolio.id is None:

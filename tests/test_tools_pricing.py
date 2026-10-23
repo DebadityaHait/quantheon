@@ -8,7 +8,7 @@ from app.tools.pricing import price_product_tool
 def test_price_product_tool():
     fake_result = MagicMock(ok=True, data={"price": 1.23}, error=None)
     with patch(
-        "app.services.domains.pricing._quantark_price_product",
+        "app.services.domains.pricing._engine_price_product",
         return_value=fake_result,
     ):
         result = price_product_tool.invoke(
@@ -30,7 +30,7 @@ def test_price_product_tool():
 def test_price_product_tool_error():
     fake_result = MagicMock(ok=False, data={}, error="invalid spec")
     with patch(
-        "app.services.domains.pricing._quantark_price_product",
+        "app.services.domains.pricing._engine_price_product",
         return_value=fake_result,
     ):
         result = price_product_tool.invoke(

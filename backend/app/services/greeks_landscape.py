@@ -16,7 +16,7 @@ from ..models import (
     TaskStatus,
 )
 from .engine_configs import get_engine_config, position_with_engine, resolve_pricing_engine
-from .quantark import build_engine_for_position, build_pricing_env, build_product_for_position
+from .quantheon_engine import build_engine_for_position, build_pricing_env, build_product_for_position
 from .risk_engine import _pricing_position_context, _resolve_risk_positions
 from .task_runner import mark_task_finished, mark_task_running, update_task_progress
 

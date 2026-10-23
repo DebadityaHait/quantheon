@@ -34,7 +34,7 @@ _SCHEMA_FAMILIES = frozenset({
 
 
 class GetProductTermSchemaInput(BaseModel):
-    quantark_class: str = Field(description="QuantArk family class, e.g. BarrierOption.")
+    quantark_class: str = Field(description="Quantheon Engine family class, e.g. BarrierOption.")
 
 
 @capability_gated(group=ToolGroup.DOMAIN_READ)
@@ -46,7 +46,7 @@ def get_product_term_schema(quantark_class: str) -> dict:
     required fields."""
     contract = contract_for(quantark_class)
     if contract is None:
-        return {"error": f"Unknown QuantArk class {quantark_class!r}",
+        return {"error": f"Unknown Quantheon Engine class {quantark_class!r}",
                 "known_classes": sorted(_CONTRACTS)}
     if quantark_class not in _SCHEMA_FAMILIES or not contract.fields:
         return {"quantark_class": quantark_class, "schema_available": False,

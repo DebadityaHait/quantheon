@@ -2,7 +2,7 @@
 
 Reads the shaped JSON results produced by `scenario_test.shape_results` and writes a
 self-contained HTML file that matches the application's visual style. Replaces the
-QuantArk ReportGenerator dependency for this report type.
+Quantheon Engine ReportGenerator dependency for this report type.
 """
 from __future__ import annotations
 

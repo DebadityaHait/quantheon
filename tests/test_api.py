@@ -1385,10 +1385,10 @@ def test_failed_rfq_pricing_cannot_be_approved(
         return SimpleNamespace(
             ok=False,
             data={"status": "pricing_failed"},
-            error="QuantArk engine unavailable",
+            error="Quantheon Engine engine unavailable",
         )
 
-    monkeypatch.setattr(rfq_service, "quantark_solve_rfq", fail_solve)
+    monkeypatch.setattr(rfq_service, "engine_solve_rfq", fail_solve)
     created = client.post(
         "/api/internal/rfq/draft",
         json={
@@ -1426,7 +1426,7 @@ def test_failed_rfq_pricing_cannot_be_approved(
     quoted_json = quoted.json()
     assert quoted_json["status"] == "pricing_failed"
     assert quoted_json["quote_versions"][0]["status"] == "pricing_failed"
-    assert quoted_json["quote_versions"][0]["error"] == "QuantArk engine unavailable"
+    assert quoted_json["quote_versions"][0]["error"] == "Quantheon Engine engine unavailable"
 
     approved = client.post(
         f"/api/internal/rfq/{rfq_id}/approve",
@@ -3425,14 +3425,14 @@ def test_client_rfqs_list_orders_filters_and_limits(tmp_path: Path):
 
 
 def test_rfq_catalog_template_seeds_build_quantark_products():
-    """Every catalog template's seed kwargs must build a QuantArk product +
+    """Every catalog template's seed kwargs must build a Quantheon Engine product +
     engine as-is (after build_product synthesis for snowball families). The
     client form submits these seeds directly, so an unbuildable template is a
     guaranteed pricing_failed RFQ — the range_accrual template shipped broken
     this way (kwargs the strict builder rejects)."""
     from app.schemas import PricingEnvironmentSnapshot, RFQRequestDraft
     from app.services import rfq as rfq_service
-    from app.services.quantark import validate_quantark_build
+    from app.services.quantheon_engine import validate_engine_build
 
     market = PricingEnvironmentSnapshot(
         spot=100.0,
@@ -3455,7 +3455,7 @@ def test_rfq_catalog_template_seeds_build_quantark_products():
         if missing:
             failures[template["key"]] = f"missing contract terms: {missing}"
             continue
-        result = validate_quantark_build(
+        result = validate_engine_build(
             template["product_type"],
             kwargs,
             market,
@@ -3475,8 +3475,8 @@ def test_rfq_catalog_template_seeds_build_quantark_products():
                 continue
             probe: dict = {"product_kwargs": json.loads(json.dumps(kwargs))}
             guess = rfq_service._unknown_field_spec(field_path)["initial_guess"]
-            rfq_service._set_quantark_unknown_path(probe, field_path, guess)
-            solved = validate_quantark_build(
+            rfq_service._set_engine_unknown_path(probe, field_path, guess)
+            solved = validate_engine_build(
                 template["product_type"],
                 probe["product_kwargs"],
                 market,
@@ -3530,7 +3530,7 @@ def test_client_rfq_form_solves_range_accrual_template(tmp_path: Path):
 def test_nl_draft_range_accrual_maps_coupon_to_accrual_rate():
     """Clients say "coupon" for a range accrual's accrual rate; the NL draft
     must solve the canonical range_config path, not a flat key the strict
-    QuantArk builder rejects."""
+    Quantheon Engine builder rejects."""
     from app.services import rfq as rfq_service
 
     drafted = rfq_service.draft_from_natural_language(

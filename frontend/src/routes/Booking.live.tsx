@@ -676,7 +676,7 @@ const PRODUCTS_WITH_INITIAL_PRICE = new Set([
 
 // Spot defaults inject `initial_price` into the form terms for every strike-bearing
 // product (see applySpotDefaults), but only autocallable-family constructors accept
-// it — QuantArk's registry rejects it as an unknown kwarg for the rest (e.g.
+// it — Quantheon Engine's registry rejects it as an unknown kwarg for the rest (e.g.
 // EuropeanVanillaOption). The booking-submit path strips it via buildProductRoot;
 // the pricing preview path must apply the same strip before sending product_kwargs.
 function pricingKwargs(

@@ -81,7 +81,7 @@ def _seed_open_option_for_api(symbol: str, maturity: str, trade_id: str) -> None
             product_type="VanillaCall",
             product_kwargs={"underlying": symbol, "maturity_date": maturity},
             quantity=1.0, source_trade_id=trade_id, status="open",
-            position_kind="otc", engine_name="quantark.vanilla", engine_kwargs={},
+            position_kind="otc", engine_name="quantheon_engine.vanilla", engine_kwargs={},
             source_payload={}, mapping_status="supported",
         ))
         inst = ensure_underlying(s, symbol, source="manual", status="active")

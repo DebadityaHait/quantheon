@@ -1,6 +1,6 @@
 """Pricing domain service.
 
-Facade over ``quantark.py`` (ad-hoc product pricing) and
+Facade over ``quantheon_engine.py`` (ad-hoc product pricing) and
 ``position_pricer.py`` (portfolio position batch pricing).
 """
 from __future__ import annotations
@@ -15,10 +15,10 @@ from app import database
 from app.models import Product, PositionValuationRun
 from app.schemas import PricingEnvironmentSnapshot
 from app.services.position_pricer import MarketOverrides, price_portfolio_positions
-from app.services.quantark import (
-    QuantArkResult,
-    price_product as _quantark_price_product,
-    price_product_with_greeks as _quantark_price_product_with_greeks,
+from app.services.quantheon_engine import (
+    EngineResult,
+    price_product as _engine_price_product,
+    price_product_with_greeks as _engine_price_product_with_greeks,
 )
 from app.services.domains import positions as positions_svc
 from app.services.domains.products import ProductSpec, compatibility_terms
@@ -56,9 +56,9 @@ def price_product(
     product_kwargs: dict[str, Any],
     market: PricingEnvironmentSnapshot,
     engine_name: str = "BlackScholesEngine",
-) -> QuantArkResult:
+) -> EngineResult:
     """Price an ad-hoc product spec under a market environment. Pure compute."""
-    return _quantark_price_product(
+    return _engine_price_product(
         product_type=product_type,
         product_kwargs=product_kwargs,
         market=market,
@@ -74,9 +74,9 @@ def price_product_preview(
     engine_name: str = "BlackScholesEngine",
     engine_kwargs: dict[str, Any] | None = None,
     compute_greeks: bool = True,
-) -> QuantArkResult:
+) -> EngineResult:
     """Price an ad-hoc product spec and Greeks. Pure compute, no persistence."""
-    return _quantark_price_product_with_greeks(
+    return _engine_price_product_with_greeks(
         product_type=product_type,
         product_kwargs=product_kwargs,
         market=market,
@@ -93,8 +93,8 @@ def price_product_reference(
     market: PricingEnvironmentSnapshot,
     engine_name: str = "BlackScholesEngine",
     session: Session | None = None,
-) -> QuantArkResult:
-    """Price a product-native reference through the QuantArk compatibility boundary."""
+) -> EngineResult:
+    """Price a product-native reference through the Quantheon Engine compatibility boundary."""
     with _session_scope(session) as sess:
         if product_id is not None:
             stored = sess.get(Product, product_id)

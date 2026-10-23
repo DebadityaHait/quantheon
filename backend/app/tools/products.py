@@ -18,7 +18,7 @@ class FixingReference(BaseModel):
     fixing_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
 
 class BuildProductInput(BaseModel):
-    family: str = Field(description="QuantArk product class, e.g. 'SnowballOption'.")
+    family: str = Field(description="Quantheon Engine product class, e.g. 'SnowballOption'.")
     terms: dict[str, Any] = Field(
         default_factory=dict,
         description="Structured per-family terms (levels, frequencies, tenor, dates).",

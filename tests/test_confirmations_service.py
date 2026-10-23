@@ -399,7 +399,7 @@ def test_book_trade_fallback_source_trade_id_from_sha256(
 # initial_price / exercise_date / strike as REQUIRED for EuropeanVanillaOption, and the
 # live smoke confirmed the model fills exactly those. Critically it supplies NO key from
 # booking._RAW_TERMSHEET_VOCAB (maturity_years|maturity_date|expiry_date|expiry), which
-# (before the gate also counted initial_price) made it treat these raw terms as a finished QuantArk termsheet
+# (before the gate also counted initial_price) made it treat these raw terms as a finished Quantheon Engine termsheet
 # and reject initial_price. Regression pin for synthesize_booking_terms.
 SCHEMA_VOCAB_VANILLA_TERMS = {
     "initial_price": 148.25,
@@ -449,7 +449,7 @@ def test_schema_vocabulary_terms_validate_and_book(
     assert result["ok"] is True, result
 
     # ...while the PERSISTED product carries the canonical built termsheet, which is
-    # what QuantArk actually prices (initial_price is consumed by the builder, not a
+    # what Quantheon Engine actually prices (initial_price is consumed by the builder, not a
     # constructor kwarg).
     position = session.get(Position, result["position_id"])
     assert position.product_type == "EuropeanVanillaOption"

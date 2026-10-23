@@ -245,7 +245,7 @@ class ProductBookingInput(BaseModel):
         # quantark_class instead of rejecting, so direct bookings don't loop on
         # "Unsupported product family".
         if self.quantark_class:
-            self.product_family = products_svc.product_family_for_quantark_class(
+            self.product_family = products_svc.product_family_for_engine_class(
                 self.quantark_class, components=self.components or None
             )
         if self.product_family not in _ALLOWED_PRODUCT_FAMILIES:

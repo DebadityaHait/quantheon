@@ -64,7 +64,7 @@ def _make_position(
         source_trade_id=source_trade_id,
         status=status,
         position_kind=position_kind,
-        engine_name="quantark.vanilla",
+        engine_name="quantheon_engine.vanilla",
         engine_kwargs={},
         source_payload={},
         mapping_status="supported",

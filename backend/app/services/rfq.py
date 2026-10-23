@@ -29,18 +29,18 @@ from .currency_codes import ISO_4217_CODES, normalize_currency
 from .domains.booking import BookingRequest, ProductBookingSpec, book_position
 from .domains.products import product_spec_from_executable_terms
 from .underlyings import resolve_underlying_currency
-from .quantark import (
+from .quantheon_engine import (
     _ensure_sharkfin_registry_support,
-    ensure_quantark_path,
+    ensure_engine_path,
     model_to_dict,
     price_product,
-    solve_rfq as quantark_solve_rfq,
-    validate_quantark_build,
+    solve_rfq as engine_solve_rfq,
+    validate_engine_build,
 )
 
 
 # Families whose RFQ templates carry the FLAT term contract and are synthesized
-# into a complete QuantArk termsheet by build_product (the single producer).
+# into a complete Quantheon Engine termsheet by build_product (the single producer).
 _BUILD_PRODUCT_FAMILIES = {
     "SnowballOption",
     "KnockOutResetSnowballOption",
@@ -51,7 +51,7 @@ _BUILD_PRODUCT_FAMILIES = {
 def _default_trade_start_date() -> str:
     """A near-future trade start so synthesized KO observation dates fall after
     the market valuation date (``utcnow``). A frozen literal would, once that
-    date passes, price as an already-expired schedule and QuantArk rejects it
+    date passes, price as an already-expired schedule and Quantheon Engine rejects it
     with ``end_date ... must be after start_date ...``. Templates are seed
     defaults the desk edits before quoting; computed at import is sufficient.
     """
@@ -123,7 +123,7 @@ COMMON_TEMPLATES: list[dict[str, Any]] = [
         "unknown_fields": ["barrier", "rebate"],
         # OneTouchOption takes no strike/option_type/contract_multiplier; the
         # payoff is `rebate` and the direction is `barrier_direction` — mirrors
-        # _build_one_touch's QuantArk output shape.
+        # _build_one_touch's Quantheon Engine output shape.
         "product_kwargs": {
             "barrier": 120.0,
             "rebate": 10.0,
@@ -158,7 +158,7 @@ COMMON_TEMPLATES: list[dict[str, Any]] = [
             "range_config.lower_barrier",
             "range_config.upper_barrier",
         ],
-        # Direct QuantArk termsheet (non-build_product family): only kwargs the
+        # Direct Quantheon Engine termsheet (non-build_product family): only kwargs the
         # strict RangeAccrualOption builder accepts. Barriers are absolute
         # levels on the 100-scale; daily observation over the 1y tenor —
         # mirrors _build_range_accrual's output shape.
@@ -181,7 +181,7 @@ COMMON_TEMPLATES: list[dict[str, Any]] = [
         "product_type": "SnowballOption",
         "engine_spec": {"engine_name": "SnowballQuadEngine"},
         "unknown_fields": ["barrier_config.ko_rate"],
-        # FLAT term contract (build_product input), NOT nested QuantArk kwargs.
+        # FLAT term contract (build_product input), NOT nested Quantheon Engine kwargs.
         "product_kwargs": {
             "initial_price": 100.0,
             "strike": 100.0,
@@ -325,12 +325,12 @@ def _unknown_field_spec(field_path: str) -> dict[str, Any]:
 
 
 def get_rfq_catalog() -> dict[str, Any]:
-    ensure_quantark_path()
+    ensure_engine_path()
     _ensure_sharkfin_registry_support()
     product_keys: list[str] = []
     engine_keys: list[str] = []
     try:
-        from quantark.rfq.registry import ENGINE_BUILDERS, PRODUCT_BUILDERS
+        from quantheon_engine.rfq.registry import ENGINE_BUILDERS, PRODUCT_BUILDERS
 
         product_keys = sorted(getattr(PRODUCT_BUILDERS, "_builders", {}).keys())
         engine_keys = sorted(getattr(ENGINE_BUILDERS, "_builders", {}).keys())
@@ -457,10 +457,10 @@ _SOLVE_TARGET_FLAT_KEY = {
 def _executable_product_kwargs(
     draft: RFQRequestDraft, *, quote_mode: str
 ) -> tuple[dict[str, Any], list[str]]:
-    """For build_product families, synthesize a complete QuantArk termsheet from
+    """For build_product families, synthesize a complete Quantheon Engine termsheet from
     the draft's FLAT contract terms. In solve mode the designated solve target is
     filled with its initial guess (a placeholder) so synthesis produces a complete
-    termsheet the QuantArk solver can start from (decision 6). Returns
+    termsheet the Quantheon Engine solver can start from (decision 6). Returns
     (product_kwargs, missing); missing is non-empty iff the contract is unfilled."""
     if draft.product_type not in _BUILD_PRODUCT_FAMILIES:
         return dict(draft.product_kwargs), []
@@ -526,13 +526,13 @@ def validate_rfq_terms(
             if contract_missing:
                 missing.extend(contract_missing)
             else:
-                build_validation = _quantark_build_validation(
+                build_validation = _engine_build_validation(
                     draft.model_copy(update={"product_kwargs": _kwargs})
                 )
                 if not build_validation["valid"]:
                     errors.extend(build_validation["errors"])
         else:
-            build_validation = _quantark_build_validation(draft)
+            build_validation = _engine_build_validation(draft)
             if not build_validation["valid"]:
                 errors.extend(build_validation["errors"])
     return {"valid": not errors and not missing, "errors": errors, "missing_fields": missing}
@@ -667,7 +667,7 @@ def quote_rfq(
         return rfq
 
     # For build_product families the draft carries the FLAT term contract.
-    # Synthesize the complete QuantArk termsheet that pricing/solving operates on,
+    # Synthesize the complete Quantheon Engine termsheet that pricing/solving operates on,
     # but KEEP the flat `draft` for _executable_terms_for_quote — it regenerates
     # the booked termsheet from the flat contract + solved value so every schedule
     # record's rate reflects the solved value (decision 7). Reassigning `draft`
@@ -692,13 +692,13 @@ def quote_rfq(
         )
         quote_payload = _fixed_price_quote_payload(priced_draft, result)
     else:
-        result = quantark_solve_rfq(priced_draft)
+        result = engine_solve_rfq(priced_draft)
         quote_payload = _attach_quote_amount(priced_draft, dict(result.data))
 
     executable_terms = _executable_terms_for_quote(draft, quote_mode, quote_payload)
     executable_draft = RFQRequestDraft.model_validate(executable_terms)
     executable_validation = (
-        _quantark_build_validation(executable_draft) if result.ok else {"valid": False, "errors": [result.error or "QuantArk pricing failed"], "metadata": {}}
+        _engine_build_validation(executable_draft) if result.ok else {"valid": False, "errors": [result.error or "Quantheon Engine pricing failed"], "metadata": {}}
     )
     if result.ok and not executable_validation["valid"]:
         result.ok = False
@@ -967,7 +967,7 @@ def repair_legacy_rfq_booked_positions(session: Session) -> int:
             continue
         try:
             terms = _booking_terms(rfq, quote_version)
-            validation = _quantark_build_validation(terms)
+            validation = _engine_build_validation(terms)
         except Exception:
             continue
         if not validation["valid"]:
@@ -1045,7 +1045,7 @@ def _ensure_quote_version_from_current(
         executable_terms = _executable_terms_for_quote(
             draft, "solve", rfq.quote_payload or {}
         )
-        build_validation = _quantark_build_validation(
+        build_validation = _engine_build_validation(
             RFQRequestDraft.model_validate(executable_terms)
         )
     except Exception as exc:
@@ -1220,8 +1220,8 @@ def _engine_kwargs_for_position(engine_spec: RFQEngineSpecIn) -> dict[str, Any]:
     return kwargs
 
 
-def _quantark_build_validation(draft: RFQRequestDraft) -> dict[str, Any]:
-    result = validate_quantark_build(
+def _engine_build_validation(draft: RFQRequestDraft) -> dict[str, Any]:
+    result = validate_engine_build(
         draft.product_type,
         draft.product_kwargs,
         draft.market,
@@ -1230,7 +1230,7 @@ def _quantark_build_validation(draft: RFQRequestDraft) -> dict[str, Any]:
     )
     return {
         "valid": result.ok,
-        "errors": [] if result.ok else [result.error or "QuantArk product build failed"],
+        "errors": [] if result.ok else [result.error or "Quantheon Engine product build failed"],
         "metadata": result.data,
     }
 
@@ -1245,7 +1245,7 @@ def _executable_terms_for_quote(
 
     if draft.product_type in _BUILD_PRODUCT_FAMILIES:
         # build_product families carry the FLAT contract; regenerate the complete
-        # QuantArk termsheet so booking/validation run on a buildable product. In
+        # Quantheon Engine termsheet so booking/validation run on a buildable product. In
         # solve mode, bind the solved value into the flat contract FIRST so every
         # derived schedule record's rate reflects the solved value — not the
         # initial-guess placeholder (decision 7). A top-level patch of
@@ -1274,11 +1274,11 @@ def _executable_terms_for_quote(
     field_path = str(quote_payload.get("field_path") or draft.unknown.field_path)
     if not field_path or field_path == "fixed_terms":
         return terms
-    _set_quantark_unknown_path(terms, field_path, solved)
+    _set_engine_unknown_path(terms, field_path, solved)
     return terms
 
 
-def _set_quantark_unknown_path(
+def _set_engine_unknown_path(
     terms: dict[str, Any],
     field_path: str,
     value: Any,

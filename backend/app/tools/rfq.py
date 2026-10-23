@@ -98,7 +98,7 @@ class BookRfqInput(RFQBookRequest):
 @capability_gated(group=ToolGroup.DOMAIN_READ)
 @tool("solve_rfq", args_schema=ToolRFQDraft)
 def solve_rfq_tool(**kwargs: Any) -> dict[str, Any]:
-    """Solve an RFQ unknown term through QuantArk's RFQ registry."""
+    """Solve an RFQ unknown term through Quantheon Engine's RFQ registry."""
     result = rfq_svc.solve_rfq(ToolRFQDraft.model_validate(kwargs).to_rfq_request_draft())
     return {"ok": result.ok, "quote": result.data, "error": result.error}
 
@@ -161,7 +161,7 @@ def create_or_update_rfq_draft_tool(
 @capability_gated(group=ToolGroup.DOMAIN_WRITE)
 @tool("quote_rfq", args_schema=QuoteRfqInput)
 def quote_rfq_tool(**kwargs: Any) -> dict[str, Any]:
-    """Create an immutable quote version for an RFQ through QuantArk."""
+    """Create an immutable quote version for an RFQ through Quantheon Engine."""
     request = QuoteRfqInput.model_validate(kwargs)
     request_payload = request.model_dump(exclude={"rfq_id", "product"})
     if request.product is not None:

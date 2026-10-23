@@ -28,7 +28,7 @@ and settle them, and issue settlement notices.
 An amount either comes with the lifecycle event or the cashflow is honestly
 `needs_amount`. That is a correct state, not a bug — the same `empty` vs
 `unavailable` discipline the report module fought for. A settlement calculator here
-would be a second, unvalidated pricing surface beside the pinned `quantark==0.3.0`.
+would be a second, unvalidated pricing surface beside the bundled pricing engine.
 The one exception is the `premium` leg, which multiplies the position's own recorded
 `entry_price × quantity` — two stored trade fields, not a model.
 

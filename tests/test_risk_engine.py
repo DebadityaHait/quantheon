@@ -8,17 +8,17 @@ import pytest
 
 from app.models import Portfolio, Position
 from app.schemas import PricingEnvironmentSnapshot
-from app.services.quantark import (
-    QuantArkResult,
+from app.services.quantheon_engine import (
+    EngineResult,
     calculate_portfolio_risk,
-    ensure_quantark_path,
+    ensure_engine_path,
 )
 from app.services.risk_engine import compute_position_greeks, compute_portfolio_greeks
 
 
 @pytest.fixture(autouse=True)
-def _quantark_on_path():
-    ensure_quantark_path()
+def _engine_on_path():
+    ensure_engine_path()
 
 
 def _vanilla_position(qty: float = 100.0) -> Position:
@@ -52,7 +52,7 @@ def test_compute_position_greeks_returns_full_set_for_vanilla():
 
 
 def test_quantark_rho_and_rho_q_are_price_changes_per_parallel_one_percent_bump():
-    from app.services.quantark import (
+    from app.services.quantheon_engine import (
         build_engine_for_position,
         build_pricing_env,
         build_product_for_position,
@@ -225,12 +225,12 @@ def test_calculate_portfolio_risk_excludes_implausible_model_outputs(monkeypatch
     portfolio = Portfolio(id=1, name="t", base_currency="CNY", positions=[position])
 
     def huge_price(*args, **kwargs):
-        return QuantArkResult(
+        return EngineResult(
             ok=True,
             data={"price": 1e281, "engine": "TestEngine", "product_type": "Test"},
         )
 
-    monkeypatch.setattr("app.services.quantark.price_product", huge_price)
+    monkeypatch.setattr("app.services.quantheon_engine.price_product", huge_price)
 
     risk = calculate_portfolio_risk(portfolio, PricingEnvironmentSnapshot())
 
@@ -248,7 +248,7 @@ def test_calculate_portfolio_risk_prices_positions_in_parallel(monkeypatch):
         with lock:
             calls.append(threading.get_ident())
         time.sleep(0.05)
-        return QuantArkResult(
+        return EngineResult(
             ok=True,
             data={"price": 10.0, "engine": engine_name, "product_type": product_type},
         )
@@ -264,7 +264,7 @@ def test_calculate_portfolio_risk_prices_positions_in_parallel(monkeypatch):
             "rho_q": 0.0,
         }
 
-    monkeypatch.setattr("app.services.quantark.price_product", fake_price)
+    monkeypatch.setattr("app.services.quantheon_engine.price_product", fake_price)
     monkeypatch.setattr("app.services.risk_engine.compute_position_greeks", fake_greeks)
     positions = []
     for index in range(4):
@@ -300,9 +300,9 @@ def test_calculate_portfolio_risk_uses_futures_market_price_and_multiplier(monke
         assert product_type == "Futures"
         assert product_kwargs["market_price"] == 4913.8
         assert engine_kwargs["use_market_price"] is True
-        return QuantArkResult(ok=True, data={"price": product_kwargs["market_price"], "engine": engine_name})
+        return EngineResult(ok=True, data={"price": product_kwargs["market_price"], "engine": engine_name})
 
-    monkeypatch.setattr("app.services.quantark.price_product", fake_price)
+    monkeypatch.setattr("app.services.quantheon_engine.price_product", fake_price)
     monkeypatch.setattr(
         "app.services.risk_engine.compute_position_greeks",
         lambda position, market: {
@@ -341,7 +341,7 @@ def test_calculate_portfolio_risk_uses_exact_greeks_for_quad_engines(monkeypatch
     portfolio = Portfolio(id=1, name="t", base_currency="CNY", positions=[position])
 
     def fake_price(product_type, product_kwargs, market, engine_name, engine_kwargs):
-        return QuantArkResult(
+        return EngineResult(
             ok=True,
             data={"price": 10.0, "engine": engine_name, "product_type": product_type},
         )
@@ -360,7 +360,7 @@ def test_calculate_portfolio_risk_uses_exact_greeks_for_quad_engines(monkeypatch
             "rho_q": 0.04,
         }
 
-    monkeypatch.setattr("app.services.quantark.price_product", fake_price)
+    monkeypatch.setattr("app.services.quantheon_engine.price_product", fake_price)
     monkeypatch.setattr("app.services.risk_engine.compute_position_greeks", fake_greeks)
 
     risk = calculate_portfolio_risk(
@@ -540,7 +540,7 @@ def test_risk_run_uses_exact_trade_profile_row_before_underlying(tmp_path, monke
     def fake_price(product_type, product_kwargs, market, engine_name, engine_kwargs):
         captured["spot"] = market.spot
         captured["volatility"] = market.volatility
-        return QuantArkResult(
+        return EngineResult(
             ok=True,
             data={"price": 10.0, "engine": engine_name, "product_type": product_type},
         )
@@ -556,7 +556,7 @@ def test_risk_run_uses_exact_trade_profile_row_before_underlying(tmp_path, monke
             "rho_q": 0.0,
         }
 
-    monkeypatch.setattr("app.services.quantark.price_product", fake_price)
+    monkeypatch.setattr("app.services.quantheon_engine.price_product", fake_price)
     monkeypatch.setattr("app.services.risk_engine.compute_position_greeks", fake_greeks)
 
     with database.SessionLocal() as session:
@@ -649,7 +649,7 @@ def test_risk_run_uses_unique_complete_underlying_profile_row(tmp_path, monkeypa
         captured["rate"] = market.rate
         captured["dividend_yield"] = market.dividend_yield
         captured["volatility"] = market.volatility
-        return QuantArkResult(
+        return EngineResult(
             ok=True,
             data={"price": 10.0, "engine": engine_name, "product_type": product_type},
         )
@@ -665,7 +665,7 @@ def test_risk_run_uses_unique_complete_underlying_profile_row(tmp_path, monkeypa
             "rho_q": 0.0,
         }
 
-    monkeypatch.setattr("app.services.quantark.price_product", fake_price)
+    monkeypatch.setattr("app.services.quantheon_engine.price_product", fake_price)
     monkeypatch.setattr("app.services.risk_engine.compute_position_greeks", fake_greeks)
 
     with database.SessionLocal() as session:
@@ -788,7 +788,7 @@ def test_risk_run_fails_when_profile_cannot_extract_pricing_params(
     def fake_price(*args, **kwargs):
         raise AssertionError("Risk should not price unmatched profile rows with defaults")
 
-    monkeypatch.setattr("app.services.quantark.price_product", fake_price)
+    monkeypatch.setattr("app.services.quantheon_engine.price_product", fake_price)
 
     with database.SessionLocal() as session:
         portfolio = Portfolio(name="P", base_currency="USD")
@@ -925,7 +925,7 @@ def test_compute_position_greeks_respects_engine_kwargs_override(monkeypatch):
     monkeypatch.setattr(risk_engine, "build_product_for_position", fake_build_product_for_position)
     monkeypatch.setattr(risk_engine, "build_pricing_env", fake_build_pricing_env)
     monkeypatch.setattr(
-        "quantark.asset.equity.riskmeasures.greeks_calculator.GreeksCalculator",
+        "quantheon_engine.asset.equity.riskmeasures.greeks_calculator.GreeksCalculator",
         FakeGreeksCalculator,
         raising=False,
     )

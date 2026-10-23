@@ -27,7 +27,7 @@ from app.services.domains.product_contracts import (
 class CheckTermCompletenessInput(BaseModel):
     representation: Representation = Field(default="raw_build_inputs", description="raw_build_inputs for collected builder inputs; native_product_terms for build_product.product_kwargs, RFQ product.terms or stored native terms; valuation_market for explicit spot/r/q/vol/date.")
     quantark_class: str = Field(
-        description="QuantArk family class, e.g. SingleSharkfinOption, SnowballOption."
+        description="Quantheon Engine family class, e.g. SingleSharkfinOption, SnowballOption."
     )
     terms: dict[str, Any] = Field(
         default_factory=dict,
@@ -79,7 +79,7 @@ def check_term_completeness(quantark_class: str, terms: dict[str, Any] | None = 
     contract = contract_for(quantark_class)
     if contract is None:
         return {
-            "error": f"Unknown QuantArk class {quantark_class!r}",
+            "error": f"Unknown Quantheon Engine class {quantark_class!r}",
             "known_classes": sorted(_CONTRACTS),
         }
     terms = terms or {}

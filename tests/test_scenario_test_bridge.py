@@ -3,14 +3,14 @@ from types import SimpleNamespace
 from app.models import ScenarioTestRun, TaskKind, TaskRun
 from app.schemas import PricingEnvironmentSnapshot
 from app.services import scenario_test_bridge
-from app.services.quantark import ensure_quantark_path
+from app.services.quantheon_engine import ensure_engine_path
 
 import pytest
 
 
 @pytest.fixture(autouse=True)
-def _quantark_on_path():
-    ensure_quantark_path()
+def _engine_on_path():
+    ensure_engine_path()
 
 
 def test_scenario_test_kind_exists():
@@ -61,11 +61,11 @@ def _pos(pid, underlying, qty, mapping_status="manual"):
 
 
 def test_excludes_unsupported_positions(monkeypatch):
-    monkeypatch.setattr(scenario_test_bridge.quantark, "build_product_for_position",
+    monkeypatch.setattr(scenario_test_bridge.quantheon_engine, "build_product_for_position",
                         lambda p, m: SimpleNamespace(name="prod"))
-    monkeypatch.setattr(scenario_test_bridge.quantark, "build_engine_for_position",
+    monkeypatch.setattr(scenario_test_bridge.quantheon_engine, "build_engine_for_position",
                         lambda p, m: SimpleNamespace(name="engine"))
-    monkeypatch.setattr(scenario_test_bridge.quantark, "build_pricing_env",
+    monkeypatch.setattr(scenario_test_bridge.quantheon_engine, "build_pricing_env",
                         lambda m: SimpleNamespace(name="env"))
 
     positions = [_pos(1, "AAPL", 10), _pos(2, "AAPL", 5, mapping_status="unsupported")]
@@ -78,7 +78,7 @@ def test_excludes_unsupported_positions(monkeypatch):
     assert len(portfolio) == 1
     assert "AAPL" in portfolio.pricing_environments
     assert excluded == [{"position_id": 2, "reason": "Position mapping status is unsupported"}]
-    # Positions must be keyed by DB id (str), not QuantArk-generated UUID.
+    # Positions must be keyed by DB id (str), not Quantheon Engine-generated UUID.
     assert str(1) in portfolio.positions
 
 
@@ -92,10 +92,10 @@ def test_build_failure_isolates_position(monkeypatch):
             raise RuntimeError("bad product")
         return SimpleNamespace(name="prod")
 
-    monkeypatch.setattr(scenario_test_bridge.quantark, "build_product_for_position", _product)
-    monkeypatch.setattr(scenario_test_bridge.quantark, "build_engine_for_position",
+    monkeypatch.setattr(scenario_test_bridge.quantheon_engine, "build_product_for_position", _product)
+    monkeypatch.setattr(scenario_test_bridge.quantheon_engine, "build_engine_for_position",
                         lambda p, m: SimpleNamespace(name="engine"))
-    monkeypatch.setattr(scenario_test_bridge.quantark, "build_pricing_env",
+    monkeypatch.setattr(scenario_test_bridge.quantheon_engine, "build_pricing_env",
                         lambda m: SimpleNamespace(name="env"))
 
     positions = [_pos(10, "TSLA", 5), _pos(20, "TSLA", 3)]
@@ -112,11 +112,11 @@ def test_build_failure_isolates_position(monkeypatch):
 
 
 def test_zero_quantity_excluded(monkeypatch):
-    monkeypatch.setattr(scenario_test_bridge.quantark, "build_product_for_position",
+    monkeypatch.setattr(scenario_test_bridge.quantheon_engine, "build_product_for_position",
                         lambda p, m: SimpleNamespace())
-    monkeypatch.setattr(scenario_test_bridge.quantark, "build_engine_for_position",
+    monkeypatch.setattr(scenario_test_bridge.quantheon_engine, "build_engine_for_position",
                         lambda p, m: SimpleNamespace())
-    monkeypatch.setattr(scenario_test_bridge.quantark, "build_pricing_env",
+    monkeypatch.setattr(scenario_test_bridge.quantheon_engine, "build_pricing_env",
                         lambda m: SimpleNamespace())
     positions = [_pos(3, "TSLA", 0)]
     markets = {3: PricingEnvironmentSnapshot(spot=200.0)}
@@ -133,10 +133,10 @@ def test_first_seen_market_seeds_underlying_env(monkeypatch):
         env = SimpleNamespace(spot=market.spot)
         seen.setdefault(market.spot, env)
         return env
-    monkeypatch.setattr(scenario_test_bridge.quantark, "build_pricing_env", _fake_env)
-    monkeypatch.setattr(scenario_test_bridge.quantark, "build_product_for_position",
+    monkeypatch.setattr(scenario_test_bridge.quantheon_engine, "build_pricing_env", _fake_env)
+    monkeypatch.setattr(scenario_test_bridge.quantheon_engine, "build_product_for_position",
                         lambda p, m: SimpleNamespace())
-    monkeypatch.setattr(scenario_test_bridge.quantark, "build_engine_for_position",
+    monkeypatch.setattr(scenario_test_bridge.quantheon_engine, "build_engine_for_position",
                         lambda p, m: SimpleNamespace())
     positions = [_pos(1, "AAPL", 10), _pos(2, "AAPL", 5)]
     markets = {1: PricingEnvironmentSnapshot(spot=100.0),

@@ -3,7 +3,7 @@
 Values are READ from real producer payloads (never invented), so Spec B's
 ``response_quotes_value`` / ``answer_field_quotes`` targets stay reproducible.
 Paths are underlying/shift-keyed (NOT position_id — ids are not stable in a
-clean DB). Re-run after any QuantArk numeric change instead of hand-editing a
+clean DB). Re-run after any Quantheon Engine numeric change instead of hand-editing a
 truth file:
 
     python -m app.golden_workflows.harvest_fixtures                      # flagship

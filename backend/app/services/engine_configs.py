@@ -84,7 +84,7 @@ MC_ENGINE_BY_PRODUCT_TYPE = {
     "PhoenixOption": "PhoenixMCEngine",
 }
 
-# Products QuantArk's unified PDEEngine auto-dispatches to a solver for.
+# Products Quantheon Engine's unified PDEEngine auto-dispatches to a solver for.
 PDE_PRODUCT_TYPES = {
     "EuropeanVanillaOption",
     "AmericanOption",
@@ -175,7 +175,7 @@ def validate_rules(rules: dict[str, Any]) -> None:
                 raise ValueError(f"rules[{idx}] needs pricing.engine_name")
             if engine_name not in PRICING_ENGINE_TO_BACKTEST_ENGINE:
                 raise ValueError(
-                    f"rules[{idx}] pricing.engine_name {engine_name!r} is not a known QuantArk engine"
+                    f"rules[{idx}] pricing.engine_name {engine_name!r} is not a known Quantheon Engine engine"
                 )
         engine_kwargs = pricing.get("engine_kwargs")
         if engine_kwargs is not None and not isinstance(engine_kwargs, dict):

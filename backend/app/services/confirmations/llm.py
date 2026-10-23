@@ -209,7 +209,7 @@ def _complete_json(client: ExtractorClient, parts: list[dict]) -> dict:
 
 
 _SEGMENT_INSTRUCTIONS = """You are reading an OTC trade confirmation document.
-List every distinct trade it confirms. For each trade pick the QuantArk product
+List every distinct trade it confirms. For each trade pick the Quantheon Engine product
 family from EXACTLY this list (or "unknown" if none fits):
 {families}
 

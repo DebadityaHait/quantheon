@@ -26,7 +26,7 @@ from app.services import (
     backtest_bridge,
     backtest_market_history as mh,
     hedging_universe,
-    quantark,
+    quantheon_engine,
 )
 from app.services.domains import backtest_report
 from app.services.underlyings import akshare_asset_class, akshare_symbol
@@ -328,8 +328,8 @@ _ENGINE_ALIASES = {
 
 def _engine_type(name: str | None):
     """Map a friendly engine name to ``util.enum.engine_enums.EngineType``."""
-    quantark.ensure_quantark_path()
-    from quantark.util.enum.engine_enums import EngineType
+    quantheon_engine.ensure_engine_path()
+    from quantheon_engine.util.enum.engine_enums import EngineType
 
     key = (name or "quad").strip().lower()
     member = _ENGINE_ALIASES.get(key, "QUADRATURE")
@@ -428,8 +428,8 @@ def prepare_pipeline_inputs(
     evidence_rows: list[dict[str, Any]] = []
     groups = backtest_bridge.group_by_underlying(positions)
     if groups:
-        quantark.ensure_quantark_path()
-        from quantark.backtest.otc import HedgeSpec, FuturesRollPolicy
+        quantheon_engine.ensure_engine_path()
+        from quantheon_engine.backtest.otc import HedgeSpec, FuturesRollPolicy
 
     for underlying, plist in groups.items():
         try:
@@ -609,8 +609,8 @@ def run_pipeline(
     retained for callers that need the engine-native objects; artifact rendering
     uses the shaped ``results_dict``.
     """
-    quantark.ensure_quantark_path()
-    from quantark.backtest.otc import (
+    quantheon_engine.ensure_engine_path()
+    from quantheon_engine.backtest.otc import (
         BookAutocallableBacktestEngine,
         HedgeSpec,
         FuturesRollPolicy,

@@ -19,7 +19,7 @@ from app.services.deep_agent.reference_docs import (
 
 class GetProductReferenceDocInput(BaseModel):
     quantark_class: str = Field(
-        description="QuantArk family class, e.g. SnowballOption, BarrierOption."
+        description="Quantheon Engine family class, e.g. SnowballOption, BarrierOption."
     )
 
 

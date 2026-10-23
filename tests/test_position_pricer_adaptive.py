@@ -9,7 +9,7 @@ import pytest
 from app.schemas import PricingEnvironmentSnapshot
 from app.services import position_pricer
 from app.services.position_pricer import MarketOverrides, _price_position
-from app.services.quantark import QuantArkResult
+from app.services.quantheon_engine import EngineResult
 
 
 def _make_position(*, engine_kwargs: dict | None = None) -> SimpleNamespace:
@@ -53,7 +53,7 @@ def _make_market() -> PricingEnvironmentSnapshot:
 
 def _call_price_position(position, *, monkeypatch, price_by_grid):
     """Run _price_position with a stubbed price_product that returns
-    QuantArkResult(ok=True, data={"price": price_by_grid[grid]}) keyed on the
+    EngineResult(ok=True, data={"price": price_by_grid[grid]}) keyed on the
     grid_points passed in engine_kwargs."""
 
     calls: list[int] = []
@@ -63,8 +63,8 @@ def _call_price_position(position, *, monkeypatch, price_by_grid):
         calls.append(grid)
         value = price_by_grid.get(grid)
         if value is None:
-            return QuantArkResult(ok=False, error=f"no rig for grid {grid}", data={})
-        return QuantArkResult(ok=True, data={"price": float(value)})
+            return EngineResult(ok=False, error=f"no rig for grid {grid}", data={})
+        return EngineResult(ok=True, data={"price": float(value)})
 
     monkeypatch.setattr(
         "app.services.position_pricer.price_product", fake_price_product
@@ -150,16 +150,16 @@ def test_case_E_explicit_grid_is_honored_single_attempt(monkeypatch):
 
 
 def test_case_F_greeks_reuse_winning_grid(monkeypatch):
-    from app.services.quantark import QuantArkResult
+    from app.services.quantheon_engine import EngineResult
     position = _make_position()  # default: quad_params, no explicit grid → adaptive chain
 
     def fake_price_product(product_type, product_kwargs, market, engine_name, engine_kwargs):
         grid = int((engine_kwargs or {}).get("params_kwargs", {}).get("grid_points", -1))
         if grid == 201:
-            return QuantArkResult(ok=True, data={"price": float("inf")})  # implausible
+            return EngineResult(ok=True, data={"price": float("inf")})  # implausible
         if grid == 501:
-            return QuantArkResult(ok=True, data={"price": 50.0})
-        return QuantArkResult(ok=False, error="not rigged", data={})
+            return EngineResult(ok=True, data={"price": 50.0})
+        return EngineResult(ok=False, error="not rigged", data={})
 
     captured_greeks_kwargs: dict = {}
 
@@ -202,7 +202,7 @@ def test_price_position_greeks_are_signed_by_quantity(monkeypatch):
 
     monkeypatch.setattr(
         "app.services.position_pricer.price_product",
-        lambda *a, **k: QuantArkResult(ok=True, data={"price": 50.0}),
+        lambda *a, **k: EngineResult(ok=True, data={"price": 50.0}),
     )
     monkeypatch.setattr(
         "app.services.position_pricer.gross_notional_for_position",

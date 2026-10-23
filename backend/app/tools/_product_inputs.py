@@ -14,7 +14,7 @@ from app.schemas import (
     RFQUnknownSpecIn,
 )
 from app.services.underlyings import resolve_underlying_currency
-from app.services.domains.products import ProductSpec, product_family_for_quantark_class
+from app.services.domains.products import ProductSpec, product_family_for_engine_class
 
 
 def _resolve_rfq_currency(underlying: str | None, *candidates: Any) -> str:
@@ -162,7 +162,7 @@ def rfq_draft_to_product_payload(draft: RFQRequestDraft | dict[str, Any]) -> dic
         "product": {
             "asset_class": "equity",
             "product_family": payload.get("product_family")
-            or product_family_for_quantark_class(product_type, components=components),
+            or product_family_for_engine_class(product_type, components=components),
             "quantark_class": product_type,
             "underlying": underlying,
             "currency": currency,

@@ -29,7 +29,7 @@ const catalog = {
       unknown_field_specs: [
         { field_path: 'basis', label: 'Basis', lower_bound: -10, upper_bound: 10, initial_guess: 0 },
       ],
-      // Delta-one seeds carry the underlying inside the terms (QuantArk
+      // Delta-one seeds carry the underlying inside the terms (Quantheon Engine
       // builds Futures from it); the live wrapper must keep it in sync
       // with the user's selection.
       product_kwargs: { maturity: 1, multiplier: 1, underlying: 'CSI500' },
@@ -282,8 +282,8 @@ describe('ClientRfqLive', () => {
         return {
           ok: false,
           status: 400,
-          json: async () => ({ detail: 'QuantArk build failed' }),
-          text: async () => JSON.stringify({ detail: 'QuantArk build failed' }),
+          json: async () => ({ detail: 'Quantheon Engine build failed' }),
+          text: async () => JSON.stringify({ detail: 'Quantheon Engine build failed' }),
         } as Response;
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -300,7 +300,7 @@ describe('ClientRfqLive', () => {
     await userEvent.type(screen.getByLabelText('Target Value'), '12');
     await userEvent.click(screen.getByRole('button', { name: /submit rfq/i }));
     await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent('QuantArk build failed');
+      expect(screen.getByRole('alert')).toHaveTextContent('Quantheon Engine build failed');
     });
 
     const nameInput = screen.getByLabelText('Client Name');

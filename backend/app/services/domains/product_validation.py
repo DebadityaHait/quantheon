@@ -37,11 +37,11 @@ def check_valuation_market(market: dict[str, Any]) -> dict[str, Any]:
 def check_native_terms(family: str, terms: dict[str, Any]) -> dict[str, Any]:
     # Use the installed registry's real constructor conversion and validation,
     # including nested configs and schedules. No raw-input resynthesis or price.
-    from app.services.quantark import _ensure_sharkfin_registry_support
+    from app.services.quantheon_engine import _ensure_sharkfin_registry_support
     _ensure_sharkfin_registry_support()
-    from quantark.rfq.builders import build_product_from_termsheet
+    from quantheon_engine.rfq.builders import build_product_from_termsheet
     import inspect
-    from quantark.asset.equity.product import option, deltaone
+    from quantheon_engine.asset.equity.product import option, deltaone
     cls = getattr(option, family, None) or getattr(deltaone, family, None)
     missing: list[str] = []
     if cls is not None:
@@ -57,7 +57,7 @@ def check_native_terms(family: str, terms: dict[str, Any]) -> dict[str, Any]:
     errors: list[str] = []
     try:
         from app.schemas import PricingEnvironmentSnapshot
-        from app.services.quantark import _build_termsheet
+        from app.services.quantheon_engine import _build_termsheet
         from .product_builders import _ENGINE_BY_CLASS
         sheet, _ = _build_termsheet(product_type=family, product_kwargs=dict(terms),
                                     market=PricingEnvironmentSnapshot(),

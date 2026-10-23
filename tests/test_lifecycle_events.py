@@ -86,7 +86,7 @@ channels:
     )
 
 
-# A minimal valid Snowball term set. Snowball booking now runs QuantArk
+# A minimal valid Snowball term set. Snowball booking now runs Quantheon Engine
 # validation, so a bare ``SnowballOption`` (no terms) is rejected with 400.
 # These tests only need a live barrier product to attach lifecycle events to.
 _SNOWBALL_PRODUCT_KWARGS = {

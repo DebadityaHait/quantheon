@@ -55,7 +55,7 @@ def resolve_enum_values(spec: FieldSpec) -> tuple[str, ...]:
     if spec.enum_values is not None:
         return tuple(spec.enum_values)
     if spec.enum_ref is not None:
-        from quantark.util import enum as qenum
+        from quantheon_engine.util import enum as qenum
 
         enum_cls = getattr(qenum, spec.enum_ref)
         return tuple(member.name for member in enum_cls)

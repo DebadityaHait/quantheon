@@ -15,7 +15,7 @@ from enum import Enum
 from functools import lru_cache
 from typing import Any
 
-from quantark.util.calendar import (
+from quantheon_engine.util.calendar import (
     BusinessDayConvention,
     CalendarType,
     create_calendar,

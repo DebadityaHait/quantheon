@@ -5,12 +5,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import func, select
 
-from app.services.quantark import ensure_quantark_path
+from app.services.quantheon_engine import ensure_engine_path
 
 
 @pytest.fixture(autouse=True)
-def _quantark_on_path():
-    ensure_quantark_path()
+def _engine_on_path():
+    ensure_engine_path()
 
 
 def _database(tmp_path, monkeypatch):

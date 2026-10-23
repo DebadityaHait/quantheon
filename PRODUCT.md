@@ -32,7 +32,7 @@ Quantheon — Agentic derivatives pricing and hedging desk. The prior visual ide
 
 ## Evidence on Hand
 
-Current dark-mode captures live in `docs/screenshots/quantheon-*.png`. They use a synthetic portfolio; the displayed valuations, Greeks and backtest series were seeded for illustration, not calculated by QuantArk. Older captures also exist and predate the Quantheon rebrand.
+Current dark-mode captures live in `docs/screenshots/quantheon-*.png`. They use a synthetic portfolio; the displayed valuations, Greeks and backtest series were seeded for illustration, not calculated by the pricing engine.
 
 ## Product Principles
 

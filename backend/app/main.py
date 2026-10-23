@@ -253,7 +253,7 @@ from .services.instruments import (
     validate_instrument_terms,
 )
 from .services.quotes import record_quote, latest_quotes
-from .services.quantark import (
+from .services.quantheon_engine import (
     gross_notional_for_position,
     usable_model_value,
 )

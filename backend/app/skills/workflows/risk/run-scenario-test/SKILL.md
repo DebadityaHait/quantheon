@@ -1,6 +1,6 @@
 ---
 name: run-scenario-test
-description: Run a portfolio stress / scenario test using the QuantArk stresstest engine. Use when the user asks to stress test a portfolio, run market-crash / vol-spike / rate-hike / historical scenarios, build a custom multi-parameter scenario, or see worst-case P&L, VaR/CVaR, or greeks under stressed markets.
+description: Run a portfolio stress / scenario test using the Quantheon Engine stresstest engine. Use when the user asks to stress test a portfolio, run market-crash / vol-spike / rate-hike / historical scenarios, build a custom multi-parameter scenario, or see worst-case P&L, VaR/CVaR, or greeks under stressed markets.
 domain: risk
 workflow_type: compound
 allowed_envelopes:

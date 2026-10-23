@@ -226,7 +226,7 @@ export function EngineConfigsLive() {
       return;
     }
     if (productRules.some((rule) => !rule.productType.trim() || !rule.engineName.trim())) {
-      setError('Each product-type override needs a product type and QuantArk engine');
+      setError('Each product-type override needs a product type and Quantheon Engine engine');
       return;
     }
     let rulePayload: Record<string, unknown>;
@@ -379,7 +379,7 @@ export function EngineConfigsLive() {
             <div className="wl-engine-configs__section-head">
               <div>
                 <h2>Product-Type Overrides</h2>
-                <p>Highest priority. Match a real QuantArk product type and route it to a real QuantArk engine.</p>
+                <p>Highest priority. Match a real Quantheon Engine product type and route it to a real Quantheon Engine engine.</p>
               </div>
               <Button onClick={() => setProductRules((current) => [...current, newProductTypeRule()])}>Add override</Button>
             </div>
@@ -410,9 +410,9 @@ export function EngineConfigsLive() {
                       />
                     </label>
                     <label className="wl-engine-configs__field">
-                      <span>QuantArk engine</span>
+                      <span>Quantheon Engine engine</span>
                       <input
-                        list="engine-config-quantark-engine-options"
+                        list="engine-config-options"
                         value={rule.engineName}
                         onChange={(event) => updateProductRule(rule.id, { engineName: event.target.value })}
                       />
@@ -440,7 +440,7 @@ export function EngineConfigsLive() {
       <datalist id="engine-config-product-options">
         {PRODUCT_TYPES.map((item) => <option key={item} value={item} />)}
       </datalist>
-      <datalist id="engine-config-quantark-engine-options">
+      <datalist id="engine-config-options">
         {QUANTARK_ENGINES.map((item) => <option key={item} value={item} />)}
       </datalist>
     </MasterDetailPage>

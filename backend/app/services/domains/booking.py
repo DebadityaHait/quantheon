@@ -51,7 +51,7 @@ _SNOWBALL_BOOKING_TYPES = {"SnowballOption", "KnockOutResetSnowballOption"}
 
 # Every family routed through the single build_product validation gate at booking
 # time. The OTC import channel emits all of these; non-snowball families always
-# arrive as complete QuantArk termsheets (from the import adapter or the
+# arrive as complete Quantheon Engine termsheets (from the import adapter or the
 # build_product tool), so they take the prebuilt validate-and-wrap path.
 _GATED_BOOKING_TYPES = _SNOWBALL_BOOKING_TYPES | {
     "PhoenixOption",
@@ -74,28 +74,28 @@ _GATED_BOOKING_TYPES = _SNOWBALL_BOOKING_TYPES | {
 }
 
 # DeltaOne instruments (Spot/Futures) carry persistence-only metadata
-# (instrument_code/exchange/contract_code) that is not part of the QuantArk
+# (instrument_code/exchange/contract_code) that is not part of the Quantheon Engine
 # constructor surface, and their `underlying` lives at the spec top-level rather
 # than in `terms`. They are synthesized (prebuilt=False) so the builder threads
 # `underlying` in and emits the metadata as _otc_ kwargs; validate-and-wrap
-# (prebuilt=True) would feed the metadata straight to QuantArk, which rejects it.
+# (prebuilt=True) would feed the metadata straight to Quantheon Engine, which rejects it.
 _DELTAONE_BOOKING_TYPES = {"Futures", "SpotInstrument"}
 
 # Tenor/date vocabulary that ONLY the synthesize builders accept (maturity_years or
-# an explicit-date synonym -> maturity/exercise_date). A pre-built QuantArk termsheet
+# an explicit-date synonym -> maturity/exercise_date). A pre-built Quantheon Engine termsheet
 # (OTC import adapter / build_product output) uses the constructor key `maturity` (and
 # carries validated schedules like Asian observation_records), so it never contains
 # these keys — their presence uniquely marks terms an agent hand-authored, routing them
 # through synthesis.
 _RAW_TERMSHEET_VOCAB = ("maturity_years", "maturity_date", "expiry_date", "expiry")
 
-# Gated families whose QuantArk constructor takes `initial_price` natively, so a valid
+# Gated families whose Quantheon Engine constructor takes `initial_price` natively, so a valid
 # prebuilt termsheet may carry it (and re-synthesizing one would drop its weighted
 # schedule). For every OTHER family the constructor rejects it — it is the S0/validation
 # spot, not a product term — so its presence alone marks hand-authored vocabulary. The
 # maturity keys are not enough on their own: `exercise_date` is a constructor key, so a
 # raw `{initial_price, exercise_date, ...}` payload carries none of them (Runs #143/#146
-# trader-rfq step 4). Pinned to QuantArk's signatures by
+# trader-rfq step 4). Pinned to Quantheon Engine's signatures by
 # test_initial_price_native_types_match_quantark_constructors.
 _INITIAL_PRICE_NATIVE_TYPES = {
     "AsianOption",
@@ -121,7 +121,7 @@ def normalize_booking_product_spec(product: ProductBookingSpec) -> ProductBookin
     # build_product is the single producer/gate. Snowball-family terms may be raw
     # (synthesize) or complete (tidy) — auto-detect. The DeltaOne pair is also
     # synthesized (metadata -> _otc_, underlying threaded from the spec). Every
-    # other gated family arrives as a complete QuantArk termsheet (OTC import
+    # other gated family arrives as a complete Quantheon Engine termsheet (OTC import
     # adapter / build_product tool), so validate-and-wrap it verbatim via
     # prebuilt=True (re-synthesis would drop the workbook's explicit dates and
     # per-date schedules).
@@ -134,7 +134,7 @@ def normalize_booking_product_spec(product: ProductBookingSpec) -> ProductBookin
         # twice (payload prep + book_position). Already-synthesized terms validate
         # as-is via the prebuilt path; raw desk terms (S0 + persistence metadata,
         # with `underlying` at the spec top-level) are synthesized, threading the
-        # underlying in and carrying the metadata as _otc_ (which QuantArk rejects
+        # underlying in and carrying the metadata as _otc_ (which Quantheon Engine rejects
         # bare, so the prebuilt attempt fails first and falls through to synthesis).
         built = build_product(quantark_class, dict(terms), prebuilt=True)
         if not built.ok:
@@ -143,7 +143,7 @@ def normalize_booking_product_spec(product: ProductBookingSpec) -> ProductBookin
     elif quantark_class in _SNOWBALL_BOOKING_TYPES:
         built = build_product(quantark_class, terms, prebuilt=False)
     else:
-        # Non-snowball gated families normally arrive as complete QuantArk
+        # Non-snowball gated families normally arrive as complete Quantheon Engine
         # termsheets (OTC import adapter / a prior build_product call) and
         # validate-and-wrap verbatim. But an agent may hand-author RAW term-sheet
         # vocabulary at book_position (initial_price as the S0/validation spot,
@@ -178,10 +178,10 @@ def validate_booking_product_spec(
 ) -> None:
     if product.quantark_class not in _GATED_BOOKING_TYPES:
         return
-    from ..quantark import validate_quantark_build
+    from ..quantheon_engine import validate_engine_build
 
     market = _validation_market_for_product(product)
-    result = validate_quantark_build(
+    result = validate_engine_build(
         product.quantark_class or "SnowballOption",
         dict(product.terms or {}),
         market,
@@ -203,7 +203,7 @@ def prepare_booking_product_spec(
 
 
 def repair_invalid_snowball_booking_terms(session: Session) -> int:
-    """Repair persisted manual Snowball terms that predate QuantArk validation."""
+    """Repair persisted manual Snowball terms that predate Quantheon Engine validation."""
     rows = (
         session.query(Position)
         .filter(Position.product_type.in_(_SNOWBALL_BOOKING_TYPES))

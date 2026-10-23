@@ -16,7 +16,7 @@ from app.models import (
     Position,
 )
 from app.services.position_pricer import price_portfolio_positions
-from app.services.quantark import QuantArkResult
+from app.services.quantheon_engine import EngineResult
 from app.services.quotes import record_quote
 
 
@@ -96,7 +96,7 @@ def test_progress_callback_invoked_per_position(monkeypatch, session):
 
     monkeypatch.setattr(
         "app.services.position_pricer.price_product",
-        lambda *a, **k: QuantArkResult(ok=True, data={"price": 50.0}),
+        lambda *a, **k: EngineResult(ok=True, data={"price": 50.0}),
     )
     monkeypatch.setattr(
         "app.services.position_pricer.gross_notional_for_position",
@@ -144,7 +144,7 @@ def test_inner_loop_uses_multiple_threads(monkeypatch, tmp_path: Path):
             # tiny delay so workers actually overlap
             import time
             time.sleep(0.05)
-            return QuantArkResult(ok=True, data={"price": 50.0})
+            return EngineResult(ok=True, data={"price": 50.0})
 
         monkeypatch.setattr(
             "app.services.position_pricer.price_product", fake_price_product
@@ -172,7 +172,7 @@ def test_one_position_exception_does_not_stop_others(monkeypatch, session):
             n = call_count["n"]
         if n == 2:
             raise RuntimeError("simulated pricing crash")
-        return QuantArkResult(ok=True, data={"price": 50.0})
+        return EngineResult(ok=True, data={"price": 50.0})
 
     monkeypatch.setattr(
         "app.services.position_pricer.price_product", flaky_price_product

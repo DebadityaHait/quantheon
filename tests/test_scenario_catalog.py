@@ -1,11 +1,11 @@
 import pytest
 
-from app.services.quantark import ensure_quantark_path
+from app.services.quantheon_engine import ensure_engine_path
 
 
 @pytest.fixture(autouse=True)
-def _quantark_on_path():
-    ensure_quantark_path()
+def _engine_on_path():
+    ensure_engine_path()
 
 
 from app.services.domains import scenario_catalog
@@ -58,7 +58,7 @@ def test_save_and_load_set(tmp_path, monkeypatch):
 
 
 def test_build_custom_rejects_position_level():
-    # position-level targeting is unsupported in v1 (DB ids != QuantArk UUIDs).
+    # position-level targeting is unsupported in v1 (DB ids != Quantheon Engine UUIDs).
     spec = {
         "name": "P",
         "stresses": [
@@ -98,7 +98,7 @@ def test_list_predefined_includes_stress_legs():
 
 
 def test_serialize_scenario_predefined_market_crash():
-    from quantark.stresstest.scenario.scenario_library import ScenarioLibrary
+    from quantheon_engine.stresstest.scenario.scenario_library import ScenarioLibrary
     data = scenario_catalog.serialize_scenario(ScenarioLibrary.market_crash())
     legs = {s["param"]: s for s in data["stresses"]}
     assert data["name"] == "Market Crash"
